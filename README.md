@@ -4,6 +4,10 @@ A Python CLI for finding Windows update packages and preparing them for guided o
 
 ## Prepare updates for this PC
 
+From PyPI, use `uvx wuo update --dry-run`. From a source checkout, use the
+commands below. For offline preparation, `--profile` accepts a path to a local
+TOML file.
+
 ```powershell
 uv run --locked wuo update --dry-run
 uv run --locked wuo update
@@ -33,6 +37,22 @@ bundle in the same pass. `--profile` specifies the hook configuration for that
 bundle. The current WinRE rule covers KB5132061 on supported Windows 11 25H2 x64
 builds. Follow the recovery steps below for installation. Feature upgrades
 that need full Windows Setup media use Microsoft's download page.
+
+## Stage a driver offline
+
+If the offered driver has no standalone package, use the reported hardware ID
+and driver version to look up a signed Windows driver from the PC or device
+manufacturer. Extract the driver and keep its INF, catalog, and supporting
+files together. In WinRE, identify the offline Windows volume. The example
+uses `W:` for that volume and `D:` for the drive holding the extracted files.
+
+```cmd
+dism /Image:W:\ /Get-DriverInfo /Driver:D:\drivers\example.inf
+dism /Image:W:\ /Add-Driver /Driver:D:\drivers\example.inf
+```
+
+Compare the driver information with the offered hardware ID, architecture,
+and version before staging it. Check the driver version after Windows restarts.
 
 ## Find and download packages
 

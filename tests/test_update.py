@@ -147,6 +147,31 @@ def test_driver_hardware_match_is_exact_and_case_insensitive() -> None:
     assert not scan(r"PCI\VEN_8086&DEV_123")
 
 
+def test_unpublished_driver_reports_hardware_id_and_manufacturer_route(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from win_offline_update.update import Offer, run_update
+
+    hardware_id = r"PCI\VEN_8086&DEV_1234"
+    offer = Offer(DRIVER, "Intel driver (1.2.3.4)", "drivers", hardware_id, True)
+    monkeypatch.setattr(
+        "win_offline_update.update.scan_offers", lambda _: ([offer], None)
+    )
+
+    async def run() -> int:
+        transport = httpx.MockTransport(
+            lambda _: httpx.Response(302, headers={"Location": "/Thanks.aspx?id=190"})
+        )
+        async with httpx.AsyncClient(transport=transport) as client:
+            return await run_update(client, TARGET, tmp_path / "updates", dry_run=True)
+
+    assert asyncio.run(run()) == 1
+    summary = capsys.readouterr().out
+    assert hardware_id in summary
+    assert "manufacturer's signed package for Windows 25H2 x64" in summary
+    assert not (tmp_path / "updates").exists()
+
+
 def test_architecture_and_windows_release_checked_before_download() -> None:
     from win_offline_update.update import Offer, validate_applicability
 

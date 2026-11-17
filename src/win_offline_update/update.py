@@ -429,6 +429,8 @@ async def _process_offer(
     extractor: str,
 ) -> bool:
     print(f"\n[{offer.category}] {offer.title} ({offer.id})", flush=True)
+    if offer.category == "drivers" and offer.hardware_id:
+        print(f"  Windows Update Agent hardware ID: {offer.hardware_id}")
     try:
         selected = await _package(client, offer, identity)
         if selected.id != offer.id:
@@ -496,7 +498,12 @@ async def _process_offer(
         return True
     except (OSError, ValueError, httpx.HTTPError) as error:
         print(f"  Needs review: {error}")
-        if offer.category == "features":
+        if offer.category == "drivers" and offer.hardware_verified:
+            print(
+                f"  Check the PC or device manufacturer's signed package for Windows "
+                f"{identity.release} {identity.architecture} and the hardware ID above."
+            )
+        elif offer.category == "features":
             print(f"  If full Setup media is required: {feeds.WINDOWS_MEDIA}")
         elif offer.category == "defender":
             print(f"  Security intelligence downloads: {feeds.DEFENDER}")

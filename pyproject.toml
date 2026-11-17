@@ -1,8 +1,10 @@
 [project]
-name = "win-offline-update"
+name = "wuo"
 version = "0.1.0"
 description = "Find Windows updates and prepare them for offline servicing"
+readme = "README.md"
 requires-python = ">=3.15"
+classifiers = ["Operating System :: Microsoft :: Windows"]
 dependencies = [
     "beautifulsoup4>=4.14,<5",
     "httpx>=0.28,<1",
@@ -15,6 +17,12 @@ build-backend = "hatchling.build"
 [project.scripts]
 win-offline-update = "win_offline_update.cli:main"
 wuo = "win_offline_update.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/win_offline_update"]
+
+[tool.hatch.build.targets.sdist]
+include = ["/README.md", "/examples/usb4.toml", "/pyproject.toml", "/src/win_offline_update"]
 
 [dependency-groups]
 dev = ["mypy>=1.19", "pytest>=9", "ruff>=0.15"]
