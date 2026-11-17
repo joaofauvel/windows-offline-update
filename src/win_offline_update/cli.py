@@ -11,7 +11,7 @@ from pathlib import Path
 lazy import httpx
 
 from .models import DownloadManifest, Update
-lazy from . import catalog, downloads, feeds
+lazy from . import bundle, catalog, downloads, feeds, target
 
 
 def _write_updates(updates: list[Update], *, json_output: bool) -> None:
@@ -70,6 +70,27 @@ async def _run(args: argparse.Namespace) -> int:
                 )
         elif args.command == "show":
             updates = [await _resolve(client, args.update_id)]
+        elif args.command == "prepare":
+            update_id = args.update_id or await asyncio.to_thread(
+                bundle.read_update_id, args.download
+            )
+            selected = await _resolve(client, update_id)
+            identity = await asyncio.to_thread(target.read_target)
+            plan = await asyncio.to_thread(
+                bundle.prepare,
+                selected,
+                identity,
+                args.download,
+                args.output,
+                profile=args.profile,
+                extractor=args.extractor,
+            )
+            print(
+                f"Prepared {selected.kb} for Windows {identity.release} ({identity.build}.{identity.revision})."
+            )
+            print(f"Package order: {' then '.join(plan.commands)}")
+            print(f"Configured registry hooks: {len(plan.hooks)}")
+            return 0
         else:
             selected = await _resolve(client, args.update_id)
             print(
@@ -122,6 +143,27 @@ def main(argv: Sequence[str] | None = None) -> int:
     commands.add_parser(
         "media", help="Show Microsoft's full Windows Setup media download page."
     )
+    prepare = commands.add_parser(
+        "prepare", help="Prepare a verified offline servicing bundle."
+    )
+    prepare.add_argument(
+        "--download", type=Path, required=True, help="Folder containing package files."
+    )
+    prepare.add_argument(
+        "--update-id", help="Microsoft Catalog ID when importing existing packages."
+    )
+    prepare.add_argument(
+        "--output", type=Path, required=True, help="New recovery bundle directory."
+    )
+    prepare.add_argument(
+        "--profile", type=Path, help="Optional local registry-hook TOML."
+    )
+    prepare.add_argument("--extractor", default="7z.exe", help="Path to the 7-Zip CLI.")
+    verify = commands.add_parser(
+        "verify", help="Verify recovery bundle files and optional post-boot state."
+    )
+    verify.add_argument("--bundle", type=Path, required=True)
+    verify.add_argument("--post-boot", action="store_true")
     for command in (search, show, download, latest):
         command.add_argument(
             "--json", action="store_true", help="Print machine-readable results."
@@ -137,6 +179,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(feeds.WINDOWS_MEDIA)
         return 0
     try:
+        if args.command == "verify":
+            bundle.verify(args.bundle, post_boot=args.post_boot)
+            print("Verification passed.")
+            return 0
         return asyncio.run(_run(args))
     except (ValueError, OSError, httpx.HTTPError) as error:
         print(f"win-offline-update: {error}", file=sys.stderr)

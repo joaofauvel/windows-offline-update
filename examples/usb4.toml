@@ -1,0 +1,30 @@
+# Opt in only for an installation that uses these settings to boot.
+[[hooks]]
+phase = "post"
+key = 'Services\UASPStor'
+name = "Start"
+value = 0
+
+[[hooks]]
+phase = "post"
+key = 'Services\USBHUB3'
+name = "Start"
+value = 0
+
+[[hooks]]
+phase = "post"
+key = 'Services\USBXHCI'
+name = "Start"
+value = 0
+
+[[hooks]]
+phase = "post"
+key = 'Services\Usb4DeviceRouter'
+name = "Start"
+value = 0
+
+[[hooks]]
+phase = "post"
+key = 'Services\Usb4HostRouter'
+name = "Start"
+value = 0
