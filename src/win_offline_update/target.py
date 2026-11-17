@@ -1,7 +1,6 @@
 """Read the running installation's identity before preparing recovery media."""
 
 import os
-import platform
 import re
 import subprocess
 from dataclasses import dataclass
@@ -18,6 +17,29 @@ class TargetIdentity:
     windows: Path
     machine_guid: str
     loader_guid: str
+    installation_type: str = ""
+
+
+def _native_architecture() -> str:
+    from ctypes import POINTER, WinDLL, WinError, byref
+    from ctypes.wintypes import BOOL, HANDLE, USHORT
+
+    kernel = WinDLL("kernel32", use_last_error=True)
+    current_process = kernel.GetCurrentProcess
+    current_process.argtypes = ()
+    current_process.restype = HANDLE
+    read_machine = kernel.IsWow64Process2
+    read_machine.argtypes = (HANDLE, POINTER(USHORT), POINTER(USHORT))
+    read_machine.restype = BOOL
+    process, native = USHORT(), USHORT()
+    if not read_machine(current_process(), byref(process), byref(native)):
+        raise WinError()
+    architecture = {0x8664: "x64", 0xAA64: "arm64", 0x014C: "x86"}.get(native.value)
+    if architecture is None:
+        raise ValueError(
+            f"Unsupported native Windows architecture: {native.value:#06x}"
+        )
+    return architecture
 
 
 def read_target(*, read_loader: bool = True) -> TargetIdentity:
@@ -41,6 +63,7 @@ def read_target(*, read_loader: bool = True) -> TargetIdentity:
         release = str(winreg.QueryValueEx(key, "DisplayVersion")[0])
         build = int(winreg.QueryValueEx(key, "CurrentBuildNumber")[0])
         revision = int(winreg.QueryValueEx(key, "UBR")[0])
+        installation_type = str(winreg.QueryValueEx(key, "InstallationType")[0])
     with winreg.OpenKey(
         winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Cryptography", access=access
     ) as key:
@@ -70,9 +93,13 @@ def read_target(*, read_loader: bool = True) -> TargetIdentity:
                 "Windows terminal and confirm the current entry boots this partition."
             )
         loader_guid = str(UUID(identifier.group(1)))
-    architecture = {"AMD64": "x64", "ARM64": "arm64"}.get(
-        platform.machine().upper(), "x86"
-    )
     return TargetIdentity(
-        release, build, revision, architecture, windows, machine_guid, loader_guid
+        release,
+        build,
+        revision,
+        _native_architecture(),
+        windows,
+        machine_guid,
+        loader_guid,
+        installation_type,
     )

@@ -14,6 +14,7 @@ build-backend = "hatchling.build"
 
 [project.scripts]
 win-offline-update = "win_offline_update.cli:main"
+wuo = "win_offline_update.cli:main"
 
 [dependency-groups]
 dev = ["mypy>=1.19", "pytest>=9", "ruff>=0.15"]

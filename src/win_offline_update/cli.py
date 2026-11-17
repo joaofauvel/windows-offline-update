@@ -12,6 +12,7 @@ lazy import httpx
 
 from .models import DownloadManifest, Update
 lazy from . import bundle, catalog, downloads, feeds, target
+lazy from .update import run_update
 
 
 def _write_updates(updates: list[Update], *, json_output: bool) -> None:
@@ -44,6 +45,17 @@ async def _resolve(client: httpx.AsyncClient, update_id: str) -> Update:
 
 async def _run(args: argparse.Namespace) -> int:
     async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=10.0)) as client:
+        if args.command == "update":
+            identity = await asyncio.to_thread(target.read_target, read_loader=False)
+            return await run_update(
+                client,
+                identity,
+                args.output or Path.home() / "Downloads/WindowsOfflineUpdates",
+                only=tuple(args.only),
+                dry_run=args.dry_run,
+                profile=args.profile,
+                extractor=args.extractor,
+            )
         if args.command == "search":
             updates = await catalog.search(client, args.query)
             updates = [
@@ -113,10 +125,47 @@ async def _run(args: argparse.Namespace) -> int:
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="win-offline-update",
+        prog="wuo",
         description="Find Windows updates and prepare them for offline servicing.",
     )
     commands = parser.add_subparsers(dest="command")
+    workflow = commands.add_parser(
+        "update",
+        help="Find applicable updates, download them and prepare supported WinRE bundles.",
+    )
+    workflow.add_argument(
+        "--only",
+        action="append",
+        default=[],
+        choices=(
+            "monthly",
+            "features",
+            "dotnet",
+            "drivers",
+            "defender",
+            "security-platform",
+            "other",
+        ),
+        help="Limit the run to this category. Repeat to select multiple categories.",
+    )
+    workflow.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Resolve offers without downloading packages or writing a bundle.",
+    )
+    workflow.add_argument(
+        "--output",
+        type=Path,
+        help="Destination (default: ~/Downloads/WindowsOfflineUpdates).",
+    )
+    workflow.add_argument(
+        "--profile",
+        type=Path,
+        help="Optional local registry-hook TOML for recovery bundles.",
+    )
+    workflow.add_argument(
+        "--extractor", default="7z.exe", help="Path to the 7-Zip CLI."
+    )
     search = commands.add_parser(
         "search", help="Find published Microsoft Catalog updates."
     )

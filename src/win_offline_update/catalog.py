@@ -129,6 +129,11 @@ async def show(client: httpx.AsyncClient, update_id: str) -> Update:
     response = await client.get(
         f"{CATALOG}/ScopedViewInline.aspx", params={"updateid": update_id}
     )
+    if response.status_code == 404 or (
+        response.is_redirect
+        and response.headers.get("Location", "").startswith("/Thanks.aspx?")
+    ):
+        raise SourceError(f"No public Microsoft Catalog entry for offer {update_id}.")
     response.raise_for_status()
     page = BeautifulSoup(response.text, "html.parser")
     title = page.find(id="ScopedViewHandler_titleText")
@@ -147,6 +152,16 @@ async def show(client: httpx.AsyncClient, update_id: str) -> Update:
         field("productsDiv", "Supported products:"),
         field("classificationDiv", "Classification:"),
     )
+    architecture = field("archDiv", "Architecture:").casefold()
+    declared = {
+        "amd64": "x64",
+        "x64": "x64",
+        "arm64": "arm64",
+        "x86": "x86",
+        "arm": "arm",
+    }.get(architecture)
+    if declared:
+        update = replace(update, architecture=declared)
     request = [{"size": 0, "updateID": update_id, "uidInfo": update_id}]
     dialog = await client.post(
         f"{CATALOG}/DownloadDialog.aspx", data={"updateIDs": json.dumps(request)}

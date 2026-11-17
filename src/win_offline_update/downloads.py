@@ -43,6 +43,11 @@ def checked_url(url: str) -> str:
     return url
 
 
+def catalog_download_url(url: str) -> str:
+    # Older Catalog records may publish an HTTP link to the same HTTPS-enabled CDN.
+    return checked_url("https://" + url[7:] if url.startswith("http://") else url)
+
+
 def safe_name(name: str) -> bool:
     reserved = r"(?:CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9])(?:\.|$)"
     return (
@@ -69,6 +74,51 @@ def matches_digest(file: UpdateFile, sha256: str, sha1: str) -> bool:
     )
 
 
+def verify_download(update: Update, destination: Path) -> None:
+    """Recheck a completed download before the update workflow uses it again."""
+    manifest_path = destination / "manifest.json"
+    if manifest_path.is_symlink() or not manifest_path.is_file():
+        raise DownloadError(f"No regular download manifest in {destination}.")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    try:
+        same_update = (
+            manifest["schema_version"] == 1 and manifest["update"]["id"] == update.id
+        )
+        records = {record["name"]: record for record in manifest["files"]}
+        original = {
+            record["name"]: record["url"] for record in manifest["update"]["files"]
+        }
+        listed = {file.name for file in update.files}
+    except (KeyError, TypeError) as error:
+        raise DownloadError(f"Invalid download manifest in {destination}.") from error
+    if (
+        not same_update
+        or records.keys() != listed
+        or len(manifest["files"]) != len(update.files)
+    ):
+        raise DownloadError(
+            f"The downloaded files in {destination} differ from the offered package set."
+        )
+    for file in update.files:
+        path = destination / file.name
+        if (
+            not safe_name(file.name)
+            or path.is_symlink()
+            or not path.is_file()
+            or not path.resolve().is_relative_to(destination.resolve())
+        ):
+            raise DownloadError(f"Missing or unsafe package: {path}")
+        sha256, sha1 = package_hashes(path)
+        record = records[file.name]
+        if (
+            original.get(file.name) != file.url
+            or record.get("size") != path.stat().st_size
+            or record.get("sha256") != sha256
+            or not matches_digest(file, sha256, sha1)
+        ):
+            raise DownloadError(f"Cannot verify existing package: {path}")
+
+
 def atomic_json(path: Path, value: object) -> None:
     with tempfile.NamedTemporaryFile(
         dir=path.parent, mode="w", encoding="utf-8", delete=False
@@ -93,8 +143,7 @@ def _publish_file(temporary: Path, target: Path) -> None:
 async def _transfer(
     client: httpx.AsyncClient, file: UpdateFile, target: Path
 ) -> DownloadedFile:
-    # Older Catalog records may publish an HTTP link to the same HTTPS-enabled CDN.
-    url = "https://" + file.url[7:] if file.url.startswith("http://") else file.url
+    url = catalog_download_url(file.url)
     for _ in range(6):
         async with client.stream(
             "GET",

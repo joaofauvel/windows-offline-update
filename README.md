@@ -2,6 +2,38 @@
 
 A Python CLI for finding Windows update packages and preparing them for guided offline Windows servicing.
 
+## Prepare updates for this PC
+
+```powershell
+uv run --locked wuo update --dry-run
+uv run --locked wuo update
+uv run --locked wuo update --only monthly --profile .\examples\usb4.toml
+```
+
+`wuo update` queries Windows Update Agent for offers applicable to the running
+installation. It checks the native Windows architecture and uses the current
+release and build to select standalone monthly packages. `--dry-run` queries
+update metadata without downloading package files or preparing a bundle.
+
+The default covers all offered categories. Repeat `--only` to combine
+`monthly`, `features`, `dotnet`, `drivers`, `defender`, `security-platform`, or
+`other`. Driver downloads require an exact offered update ID in the Catalog and
+a matching hardware or compatible ID on a present device. Windows Update Agent
+can offer drivers that have no public standalone download. The command reports
+those offers for review. Driver packages are for manual servicing of a signed,
+matching INF.
+
+Packages are saved under `~/Downloads/WindowsOfflineUpdates` by default. Use
+`--output` to select another directory. Repeated runs verify cached files and
+report packages that need manual action. An exit status of `1` means the scan
+or one of the selected offers requires review. Other packages can still be saved.
+
+Run from an elevated terminal with 7-Zip available to prepare a supported WinRE
+bundle in the same pass. `--profile` specifies the hook configuration for that
+bundle. The current WinRE rule covers KB5132061 on supported Windows 11 25H2 x64
+builds. Follow the recovery steps below for installation. Feature upgrades
+that need full Windows Setup media use Microsoft's download page.
+
 ## Find and download packages
 
 ```powershell
