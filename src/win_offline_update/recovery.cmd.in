@@ -1,0 +1,197 @@
+@echo off
+setlocal EnableExtensions DisableDelayedExpansion
+if /i not "%SystemRoot%"=="X:\Windows" goto not_winre
+set "SYS=X:\Windows\System32"
+"%SYS%\reg.exe" query "HKLM\SYSTEM\CurrentControlSet\Control\MiniNT" >nul 2>&1 || goto not_winre
+set "MODE=%~1"
+if /i "%MODE%"=="check" goto args
+if /i "%MODE%"=="apply" goto args
+if /i "%MODE%"=="repair-hooks" goto args
+goto usage
+
+:args
+if "%~2"=="" goto usage
+if "%~3"=="" goto usage
+if not "%~4"=="" goto usage
+if /i not "%~2"=="%~d2" goto usage
+if /i not "%~3"=="%~d3" goto usage
+if /i "%~d2"=="%~d3" goto usage
+if /i "%~d2"=="X:" goto usage
+if /i "%~d3"=="X:" goto usage
+set "TARGET=%~d2"
+set "EFI=%~d3"
+set "BUNDLE=%~dp0"
+set "JOB=%TARGET%\ProgramData\WinOfflineUpdate\jobs\@@JOB@@"
+set "LOG=%JOB%\recovery.log"
+set "HOOK_HIVE=HKLM\WOU_SYSTEM_@@JOB@@"
+call :validate_target || goto unverified
+if /i "%MODE%"=="repair-hooks" goto repair
+call :validate_files || goto bad_files
+if /i "%MODE%"=="check" (
+    echo Target and package sizes verified. Check made no offline registry or package writes.
+    exit /b 0
+)
+if exist "%JOB%\apply.started\" goto interrupted
+mkdir "%JOB%\apply.started" 2>nul || goto interrupted
+(>>"%LOG%" echo Started offline apply on %TARGET% with EFI %EFI%.) || goto failed
+mkdir "%JOB%\scratch" 2>nul || goto failed
+call :inspect_packages || goto failed
+set "PHASE=pre"
+call :pre_hooks || goto failed
+call :apply_packages || goto failed
+set "PHASE=post"
+call :post_hooks || goto failed
+(>>"%LOG%" echo Offline staging and hooks succeeded. Windows may finish servicing on startup.) || goto failed
+(>"%JOB%\state.ready" echo @@JOB@@) || goto failed
+echo Offline staging succeeded. Review "%LOG%" and restart when ready.
+exit /b 0
+
+:repair
+"%SYS%\findstr.exe" /i /x /l /c:"@@JOB@@" "%JOB%\state.ready" >nul 2>&1 || goto interrupted
+mkdir "%JOB%\repair.started" 2>nul || goto interrupted
+(>>"%LOG%" echo Started post-hook repair on %TARGET%.) || goto failed
+set "PHASE=repair"
+call :post_hooks || goto failed
+(>>"%LOG%" echo Post-hook repair verified.) || goto failed
+echo Post-hook repair succeeded. Review "%LOG%" and restart when ready.
+exit /b 0
+
+:validate_target
+if not exist "%TARGET%\Windows\System32\Config\SYSTEM" exit /b 1
+if not exist "%EFI%\EFI\Microsoft\Boot\BCD" exit /b 1
+"%SYS%\findstr.exe" /i /x /l /c:"@@JOB@@" "%JOB%\target.id" >nul 2>&1 || exit /b 1
+for %%D in (A B C D E F G H I J K L M N O P Q R S T U V W X Y Z) do if /i not "%%D:"=="%TARGET%" if exist "%%D:\ProgramData\WinOfflineUpdate\jobs\@@JOB@@\target.id" exit /b 1
+set "PROBE=X:\Windows\Temp\WOU-%RANDOM%-%RANDOM%"
+set "PROBE_HIVE=HKLM\WOU_PROBE_%RANDOM%_%RANDOM%"
+mkdir "%PROBE%" 2>nul || exit /b 1
+call :probe_target
+set "PROBE_STATUS=%errorlevel%"
+del /q "%PROBE%\SOFTWARE" "%PROBE%\SOFTWARE.LOG" "%PROBE%\SOFTWARE.LOG1" "%PROBE%\SOFTWARE.LOG2" "%PROBE%\bcd.txt" >nul 2>&1
+rmdir "%PROBE%" >nul 2>&1
+exit /b %PROBE_STATUS%
+
+:probe_target
+"%SYS%\bcdedit.exe" /store "%EFI%\EFI\Microsoft\Boot\BCD" /enum "@@LOADER@@" /v >"%PROBE%\bcd.txt" 2>&1 || exit /b 1
+"%SYS%\findstr.exe" /i /r /c:"^osdevice  *partition=%TARGET%$" "%PROBE%\bcd.txt" >nul || exit /b 1
+"%SYS%\findstr.exe" /i /l /c:"@@LOADER@@" "%PROBE%\bcd.txt" >nul || exit /b 1
+copy /b "%TARGET%\Windows\System32\Config\SOFTWARE" "%PROBE%\SOFTWARE" >nul || exit /b 1
+for %%L in (LOG LOG1 LOG2) do if exist "%TARGET%\Windows\System32\Config\SOFTWARE.%%L" (
+    copy /b "%TARGET%\Windows\System32\Config\SOFTWARE.%%L" "%PROBE%\SOFTWARE.%%L" >nul || exit /b 1
+)
+"%SYS%\reg.exe" load "%PROBE_HIVE%" "%PROBE%\SOFTWARE" >nul 2>&1 || exit /b 1
+set "MACHINE="
+set "BUILD="
+set "REVISION="
+for /f "tokens=1,2,3" %%A in ('X:\Windows\System32\reg.exe query "%PROBE_HIVE%\Microsoft\Cryptography" /v MachineGuid 2^>nul') do if /i "%%A"=="MachineGuid" if /i "%%B"=="REG_SZ" set "MACHINE=%%C"
+for /f "tokens=1,2,3" %%A in ('X:\Windows\System32\reg.exe query "%PROBE_HIVE%\Microsoft\Windows NT\CurrentVersion" /v CurrentBuildNumber 2^>nul') do if /i "%%A"=="CurrentBuildNumber" if /i "%%B"=="REG_SZ" set "BUILD=%%C"
+for /f "tokens=1,2,3" %%A in ('X:\Windows\System32\reg.exe query "%PROBE_HIVE%\Microsoft\Windows NT\CurrentVersion" /v UBR 2^>nul') do if /i "%%A"=="UBR" if /i "%%B"=="REG_DWORD" set "REVISION=%%C"
+"%SYS%\reg.exe" unload "%PROBE_HIVE%" >nul 2>&1 || exit /b 1
+if /i not "%MACHINE%"=="@@MACHINE@@" exit /b 1
+if not "%BUILD%"=="@@BUILD@@" exit /b 1
+if /i "%REVISION%"=="@@BEFORE@@" exit /b 0
+if /i "%MODE%"=="repair-hooks" if /i "%REVISION%"=="@@AFTER@@" exit /b 0
+exit /b 1
+
+:validate_files
+@@PACKAGES@@
+exit /b 0
+
+:inspect_packages
+set "FREE="
+for /f "tokens=3" %%N in ('dir /a /-c "%TARGET%\" ^| X:\Windows\System32\findstr.exe /i /c:"bytes free"') do set "FREE=%%N"
+if "%FREE:~10,1%"=="" (
+    >>"%LOG%" echo Require at least 10 GB of available scratch space on the Windows volume.
+    exit /b 1
+)
+"%SYS%\dism.exe" /English /Image:%TARGET%\ /SysDriveDir:%EFI%\ /ScratchDir:"%JOB%\scratch" /LogPath:"%JOB%\dism.log" /Get-Packages /Format:Table >"%JOB%\packages-before.txt" 2>&1 || exit /b 1
+"%SYS%\findstr.exe" /i /l /c:"Package Identity" "%JOB%\packages-before.txt" >nul || exit /b 1
+"%SYS%\findstr.exe" /i /l /c:"Install Pending" /c:"Uninstall Pending" "%JOB%\packages-before.txt" >nul
+if not errorlevel 1 (
+    >>"%LOG%" echo Existing pending servicing detected. Check packages-before.txt before proceeding.
+    exit /b 1
+)
+if errorlevel 2 exit /b 1
+exit /b 0
+
+:apply_packages
+@@STAGES@@
+exit /b 0
+
+:dism_add
+(>>"%LOG%" echo Starting DISM package "%PACKAGE%") || exit /b 1
+"%SYS%\dism.exe" /English /Image:%TARGET%\ /SysDriveDir:%EFI%\ /ScratchDir:"%JOB%\scratch" /LogPath:"%JOB%\dism.log" /Add-Package /PackagePath:"%PACKAGE%" /NoRestart >>"%LOG%" 2>&1
+set "DISM_STATUS=%errorlevel%"
+(>>"%LOG%" echo DISM exit status %DISM_STATUS% for "%PACKAGE%") || exit /b 1
+if "%DISM_STATUS%"=="0" exit /b 0
+if "%DISM_STATUS%"=="3010" exit /b 0
+exit /b 1
+
+:pre_hooks
+@@PRE_HOOKS@@
+
+:post_hooks
+@@POST_HOOKS@@
+
+:open_hook_hive
+"%SYS%\reg.exe" load "%HOOK_HIVE%" "%TARGET%\Windows\System32\Config\SYSTEM" >>"%LOG%" 2>&1 || exit /b 1
+"%SYS%\reg.exe" save "%HOOK_HIVE%" "%JOB%\%PHASE%-SYSTEM.hiv" >>"%LOG%" 2>&1 || goto hook_failed
+set "CS_VALUE="
+for /f "tokens=1,2,3" %%A in ('X:\Windows\System32\reg.exe query "%HOOK_HIVE%\Select" /v Default 2^>nul') do if /i "%%A"=="Default" if /i "%%B"=="REG_DWORD" set "CS_VALUE=%%C"
+if not defined CS_VALUE goto hook_failed
+set /a "CS=CS_VALUE" >nul 2>&1 || goto hook_failed
+if %CS% LSS 1 goto hook_failed
+if %CS% GTR 999 goto hook_failed
+set "CS=00%CS%"
+set "CS=%CS:~-3%"
+exit /b 0
+
+:read_hook
+set "ACTUAL="
+for /f "tokens=1,2,3" %%A in ('X:\Windows\System32\reg.exe query "%HOOK_KEY%" /v "%HOOK_NAME%" 2^>nul') do if /i "%%A"=="%HOOK_NAME%" if /i "%%B"=="REG_DWORD" set "ACTUAL=%%C"
+if not defined ACTUAL exit /b 1
+exit /b 0
+
+:inspect_hook
+call :read_hook || exit /b 1
+(>>"%JOB%\%PHASE%-values.txt" echo "%HOOK_KEY%" /v "%HOOK_NAME%" was %ACTUAL%) || exit /b 1
+if not defined HOOK_EXPECTED exit /b 0
+if /i "%ACTUAL%"=="%HOOK_EXPECTED%" exit /b 0
+if /i "%ACTUAL%"=="%HOOK_NEW%" exit /b 0
+exit /b 1
+
+:write_hook
+call :read_hook || exit /b 1
+if /i "%ACTUAL%"=="%HOOK_NEW%" exit /b 0
+"%SYS%\reg.exe" add "%HOOK_KEY%" /v "%HOOK_NAME%" /t REG_DWORD /d "%HOOK_NEW%" /f >>"%LOG%" 2>&1 || exit /b 1
+call :read_hook || exit /b 1
+if /i not "%ACTUAL%"=="%HOOK_NEW%" exit /b 1
+exit /b 0
+
+:hook_failed
+>>"%LOG%" echo Hook phase %PHASE% failed. Inspect the phase hive backup and value log.
+"%SYS%\reg.exe" unload "%HOOK_HIVE%" >>"%LOG%" 2>&1
+exit /b 1
+
+:not_winre
+echo Start this command from WinRE. No servicing was attempted.
+exit /b 2
+
+:usage
+echo Usage: recovery.cmd check^|apply^|repair-hooks WindowsLetter: EFILetter:
+exit /b 2
+
+:unverified
+echo Target could not be verified. Check the drive letters, unlock status, EFI store and baseline build.
+exit /b 3
+
+:bad_files
+echo Bundle package missing, changed size, or contains an unexpected package.
+exit /b 3
+
+:interrupted
+echo The job is already started or does not have a completed apply record. Inspect "%JOB%".
+exit /b 4
+
+:failed
+echo Offline servicing stopped. Inspect "%LOG%" and retain the job backups before deciding whether to reboot.
+exit /b 5

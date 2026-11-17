@@ -12,6 +12,7 @@ from uuid import UUID, uuid4
 from .downloads import atomic_json, matches_digest, package_hashes, safe_name
 from .hooks import Hook, load_profile
 from .models import Update, UpdateFile
+from .recovery import render_runner
 from .target import TargetIdentity, read_target
 
 KB_ID = "950b2422-28ad-4493-a96c-03725fd0d8c2"
@@ -147,10 +148,28 @@ def prepare(
             if load_profile(snapshot) != hooks:
                 raise ValueError("The profile changed during preparation.")
             paths[snapshot.name], _ = package_hashes(snapshot)
+        script = bundle / "recovery.cmd"
+        script.write_bytes(render_runner(result).encode("ascii"))
+        paths[script.name], _ = package_hashes(script)
         manifest = asdict(result)
         manifest["target"]["windows"] = str(target.windows)
         atomic_json(bundle / "plan.json", manifest)
-        bundle.rename(output)
+        root = target.windows.parent.resolve()
+        jobs = root / JOBS_PATH
+        if not jobs.resolve().is_relative_to(root):
+            raise ValueError(
+                "The recovery job directory resolves outside the target Windows volume."
+            )
+        job = jobs / job_id
+        job.mkdir(parents=True)
+        marker = job / "target.id"
+        try:
+            marker.write_bytes(f"{job_id}\r\n".encode("ascii"))
+            bundle.rename(output)
+        except OSError:
+            marker.unlink(missing_ok=True)
+            job.rmdir()
+            raise
     return result
 
 
