@@ -1,0 +1,29 @@
+[project]
+name = "win-offline-update"
+version = "0.1.0"
+description = "Find Windows updates and prepare them for offline servicing"
+requires-python = ">=3.15"
+dependencies = []
+
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project.scripts]
+win-offline-update = "win_offline_update.cli:main"
+
+[dependency-groups]
+dev = ["mypy>=1.19", "pytest>=9", "ruff>=0.15"]
+
+[tool.ruff]
+target-version = "py315"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "UP", "B", "SIM", "ASYNC"]
+
+[tool.mypy]
+python_version = "3.15"
+strict = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
