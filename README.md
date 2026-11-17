@@ -28,9 +28,9 @@ for manual servicing.
 
 ## Windows Recovery Environment lab
 
-The WinRE runner is awaiting real servicing validation in a
-[disposable Windows VM](docs/winre-test-vm.md). The bundled servicing rule
-currently covers KB5132061 on a supported 25H2 x64 baseline. Prepare the
+The runner passed a [split-EFI VM test](docs/validation/first-winre-update.md)
+using the Command Prompt from Microsoft installation media. The bundled
+servicing rule covers KB5132061 on a supported 25H2 x64 baseline. Prepare the
 bundle from an elevated terminal inside the target VM. Install the 7-Zip CLI
 in that guest or supply its executable with `--extractor`.
 
