@@ -116,6 +116,10 @@ async def _transfer(
             ):
                 raise DownloadError(f"Unexpected payload response for {file.name}.")
             length = response.headers.get("Content-Length")
+            if length is None and file.sha256 is None and file.sha1 is None:
+                raise DownloadError(
+                    f"No download length or digest was provided for {file.name}."
+                )
             sha256 = hashlib.sha256()
             sha1 = hashlib.sha1(usedforsecurity=False)
             size = 0

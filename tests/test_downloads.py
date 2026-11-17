@@ -83,3 +83,24 @@ def test_short_response_leaves_no_manifest(tmp_path: Path) -> None:
 
     asyncio.run(run())
     assert list(tmp_path.iterdir()) == []
+
+
+def test_lengthless_digestless_response_leaves_no_manifest(tmp_path: Path) -> None:
+    from win_offline_update.downloads import DownloadError, download
+    from win_offline_update.models import Update, UpdateFile
+
+    async def run() -> None:
+        transport = httpx.MockTransport(
+            lambda _: httpx.Response(200, stream=httpx.ByteStream(b"x"))
+        )
+        async with httpx.AsyncClient(transport=transport) as client:
+            with pytest.raises(DownloadError, match="length or digest"):
+                update = Update(
+                    "test",
+                    "Update",
+                    files=(UpdateFile("mpam-fe.exe", BASE + "mpam-fe.exe"),),
+                )
+                await download(client, update, tmp_path)
+
+    asyncio.run(run())
+    assert list(tmp_path.iterdir()) == []
