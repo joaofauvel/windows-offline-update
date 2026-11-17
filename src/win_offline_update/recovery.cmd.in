@@ -71,7 +71,7 @@ set "PROBE_HIVE=HKLM\WOU_PROBE_%RANDOM%_%RANDOM%"
 mkdir "%PROBE%" 2>nul || exit /b 1
 call :probe_target
 set "PROBE_STATUS=%errorlevel%"
-del /q "%PROBE%\SOFTWARE" "%PROBE%\SOFTWARE.LOG" "%PROBE%\SOFTWARE.LOG1" "%PROBE%\SOFTWARE.LOG2" "%PROBE%\bcd.txt" >nul 2>&1
+del /f /q /a "%PROBE%\SOFTWARE" "%PROBE%\SOFTWARE.LOG" "%PROBE%\SOFTWARE.LOG1" "%PROBE%\SOFTWARE.LOG2" "%PROBE%\bcd.txt" >nul 2>&1
 rmdir "%PROBE%" >nul 2>&1
 exit /b %PROBE_STATUS%
 
@@ -85,9 +85,9 @@ for /f "usebackq tokens=1,2" %%A in ("%PROBE%\bcd.txt") do (
 )
 if /i not "%LOADER%"=="@@LOADER@@" exit /b 1
 if /i not "%OSDEVICE%"=="partition=%TARGET%" exit /b 1
-copy /b "%TARGET%\Windows\System32\Config\SOFTWARE" "%PROBE%\SOFTWARE" >nul || exit /b 1
+"%SYS%\xcopy.exe" /h /y "%TARGET%\Windows\System32\Config\SOFTWARE" "%PROBE%" >nul || exit /b 1
 for %%L in (LOG LOG1 LOG2) do if exist "%TARGET%\Windows\System32\Config\SOFTWARE.%%L" (
-    copy /b "%TARGET%\Windows\System32\Config\SOFTWARE.%%L" "%PROBE%\SOFTWARE.%%L" >nul || exit /b 1
+    "%SYS%\xcopy.exe" /h /y "%TARGET%\Windows\System32\Config\SOFTWARE.%%L" "%PROBE%" >nul || exit /b 1
 )
 "%SYS%\reg.exe" load "%PROBE_HIVE%" "%PROBE%\SOFTWARE" >nul 2>&1 || exit /b 1
 set "MACHINE="

@@ -119,6 +119,11 @@ def recovery_lab(
     config.mkdir(parents=True)
     (config / "SOFTWARE").touch()
     (config / "SYSTEM").touch()
+    hive_log = config / "SOFTWARE.LOG1"
+    hive_log.write_bytes(b"fixture transaction log")
+    subprocess.run(
+        [system / "attrib.exe", "+h", "+s", hive_log], check=True, capture_output=True
+    )
     fake_efi = tmp_path / "esp"
     (fake_efi / "EFI/Microsoft/Boot").mkdir(parents=True)
     (fake_efi / "EFI/Microsoft/Boot/BCD").touch()
@@ -132,6 +137,7 @@ def recovery_lab(
     )
     for name in ("dism.exe", "bcdedit.exe"):
         shutil.copyfile(executable, fake_system / name)
+    shutil.copyfile(system / "xcopy.exe", fake_system / "xcopy.exe")
     bundle = tmp_path / "bundle"
     (bundle / "packages").mkdir(parents=True)
     for relative, size in plan.size.items():
