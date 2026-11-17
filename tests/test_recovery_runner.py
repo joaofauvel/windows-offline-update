@@ -132,7 +132,6 @@ def recovery_lab(
     )
     for name in ("dism.exe", "bcdedit.exe"):
         shutil.copyfile(executable, fake_system / name)
-    shutil.copyfile(system / "findstr.exe", fake_system / "findstr.exe")
     bundle = tmp_path / "bundle"
     (bundle / "packages").mkdir(parents=True)
     for relative, size in plan.size.items():
@@ -216,3 +215,11 @@ def test_cmd_failed_hook_unloads_system_hive(recovery_lab) -> None:
     assert result.returncode == 5
     assert "reg unload HKLM\\WOU_SYSTEM_" in trace.read_text()
     assert not (job / "state.ready").exists()
+
+
+def test_cmd_pending_packages_prevent_writes(recovery_lab) -> None:
+    run, job, trace = recovery_lab
+    result = run("apply", WOU_TEST_PENDING="1")
+    assert result.returncode == 5
+    assert "Existing pending servicing" in (job / "recovery.log").read_text()
+    assert "/Add-Package" not in trace.read_text()

@@ -47,7 +47,9 @@ echo Offline staging succeeded. Review "%LOG%" and restart when ready.
 exit /b 0
 
 :repair
-"%SYS%\findstr.exe" /i /x /l /c:"@@JOB@@" "%JOB%\state.ready" >nul 2>&1 || goto interrupted
+set "READY="
+if exist "%JOB%\state.ready" set /p "READY="<"%JOB%\state.ready"
+if /i not "%READY%"=="@@JOB@@" goto interrupted
 mkdir "%JOB%\repair.started" 2>nul || goto interrupted
 (>>"%LOG%" echo Started post-hook repair on %TARGET%.) || goto failed
 set "PHASE=repair"
@@ -59,7 +61,10 @@ exit /b 0
 :validate_target
 if not exist "%TARGET%\Windows\System32\Config\SYSTEM" exit /b 1
 if not exist "%EFI%\EFI\Microsoft\Boot\BCD" exit /b 1
-"%SYS%\findstr.exe" /i /x /l /c:"@@JOB@@" "%JOB%\target.id" >nul 2>&1 || exit /b 1
+if not exist "%JOB%\target.id" exit /b 1
+set "MARKER="
+set /p "MARKER="<"%JOB%\target.id"
+if /i not "%MARKER%"=="@@JOB@@" exit /b 1
 for %%D in (A B C D E F G H I J K L M N O P Q R S T U V W X Y Z) do if /i not "%%D:"=="%TARGET%" if exist "%%D:\ProgramData\WinOfflineUpdate\jobs\@@JOB@@\target.id" exit /b 1
 set "PROBE=X:\Windows\Temp\WOU-%RANDOM%-%RANDOM%"
 set "PROBE_HIVE=HKLM\WOU_PROBE_%RANDOM%_%RANDOM%"
@@ -72,8 +77,14 @@ exit /b %PROBE_STATUS%
 
 :probe_target
 "%SYS%\bcdedit.exe" /store "%EFI%\EFI\Microsoft\Boot\BCD" /enum "@@LOADER@@" /v >"%PROBE%\bcd.txt" 2>&1 || exit /b 1
-"%SYS%\findstr.exe" /i /r /c:"^osdevice  *partition=%TARGET%$" "%PROBE%\bcd.txt" >nul || exit /b 1
-"%SYS%\findstr.exe" /i /l /c:"@@LOADER@@" "%PROBE%\bcd.txt" >nul || exit /b 1
+set "LOADER="
+set "OSDEVICE="
+for /f "usebackq tokens=1,2" %%A in ("%PROBE%\bcd.txt") do (
+    if /i "%%A"=="identifier" set "LOADER=%%B"
+    if /i "%%A"=="osdevice" set "OSDEVICE=%%B"
+)
+if /i not "%LOADER%"=="@@LOADER@@" exit /b 1
+if /i not "%OSDEVICE%"=="partition=%TARGET%" exit /b 1
 copy /b "%TARGET%\Windows\System32\Config\SOFTWARE" "%PROBE%\SOFTWARE" >nul || exit /b 1
 for %%L in (LOG LOG1 LOG2) do if exist "%TARGET%\Windows\System32\Config\SOFTWARE.%%L" (
     copy /b "%TARGET%\Windows\System32\Config\SOFTWARE.%%L" "%PROBE%\SOFTWARE.%%L" >nul || exit /b 1
@@ -98,19 +109,26 @@ exit /b 0
 
 :inspect_packages
 set "FREE="
-for /f "tokens=3" %%N in ('dir /a /-c "%TARGET%\" ^| X:\Windows\System32\findstr.exe /i /c:"bytes free"') do set "FREE=%%N"
+for /f "tokens=3,4,5" %%N in ('dir /a /-c "%TARGET%\"') do if /i "%%O %%P"=="bytes free" set "FREE=%%N"
 if "%FREE:~10,1%"=="" (
     >>"%LOG%" echo Require at least 10 GB of available scratch space on the Windows volume.
     exit /b 1
 )
 "%SYS%\dism.exe" /English /Image:%TARGET%\ /SysDriveDir:%EFI%\ /ScratchDir:"%JOB%\scratch" /LogPath:"%JOB%\dism.log" /Get-Packages /Format:Table >"%JOB%\packages-before.txt" 2>&1 || exit /b 1
-"%SYS%\findstr.exe" /i /l /c:"Package Identity" "%JOB%\packages-before.txt" >nul || exit /b 1
-"%SYS%\findstr.exe" /i /l /c:"Install Pending" /c:"Uninstall Pending" "%JOB%\packages-before.txt" >nul
-if not errorlevel 1 (
+set "PACKAGE_HEADER="
+set "PACKAGE_PENDING="
+for /f "usebackq tokens=1,2 delims=|" %%A in ("%JOB%\packages-before.txt") do (
+    for /f "tokens=1,2" %%I in ("%%A") do if /i "%%I %%J"=="Package Identity" set "PACKAGE_HEADER=1"
+    for /f "tokens=1,2" %%I in ("%%B") do (
+        if /i "%%I %%J"=="Install Pending" set "PACKAGE_PENDING=1"
+        if /i "%%I %%J"=="Uninstall Pending" set "PACKAGE_PENDING=1"
+    )
+)
+if not defined PACKAGE_HEADER exit /b 1
+if defined PACKAGE_PENDING (
     >>"%LOG%" echo Existing pending servicing detected. Check packages-before.txt before proceeding.
     exit /b 1
 )
-if errorlevel 2 exit /b 1
 exit /b 0
 
 :apply_packages
