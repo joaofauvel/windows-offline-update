@@ -2,6 +2,9 @@
 
 A Python CLI for finding Windows update packages and preparing them for guided offline Windows servicing.
 
+`wuo` is licensed under the GNU General Public License, version 3 or, at your
+option, any later version. See the [license text](LICENSE).
+
 ## Prepare updates for this PC
 
 From PyPI, use `uvx wuo update --dry-run`. From a source checkout, use the
