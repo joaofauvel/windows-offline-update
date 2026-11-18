@@ -3,24 +3,22 @@
 `wuo` finds applicable updates in Windows and installs supported updates from the
 Windows Recovery Environment (WinRE).
 
-## Experimental software
-
-**This tool changes Windows recovery configuration and services an offline
-Windows installation. Failures can leave Windows or WinRE unable to boot and
-may cause data loss.**
-
-Keep a current, restorable backup of your Windows and EFI partitions, separate
-recovery media, and any BitLocker recovery keys before using setup or applying
-updates. Recovery may require another computer and manual repairs.
-
-The recovery-menu workflow has been tested in disposable Windows 11 VMs,
-including a layout with Windows and EFI on separate disks. Hardware-specific
-validation of that workflow, including USB4 storage and Limine dual boot,
-remains pending.
-
-Hook profiles apply registry changes with system-level privileges. Review the
-profile and confirm that its settings fit your installation before selecting
-it. The USB4 profile changes boot-critical service settings.
+> [!WARNING]
+> **Experimental software.** **This tool changes Windows recovery configuration
+> and services an offline Windows installation. Failures can leave Windows or
+> WinRE unable to boot and may cause data loss.**
+> 
+> Keep a current, restorable backup of your Windows and EFI partitions, separate
+> recovery media, and any BitLocker recovery keys before using setup or applying
+> updates. Recovery may require another computer and manual repairs.
+> The recovery-menu workflow has been tested in disposable Windows 11 VMs,
+> including a layout with Windows and EFI on separate disks. Hardware-specific
+> validation of that workflow, including USB4 storage and Limine dual boot,
+> remains pending.
+> 
+> Hook profiles apply registry changes with system-level privileges. Review the
+> profile and confirm that its settings fit your installation before selecting
+> it. The USB4 profile changes boot-critical service settings.
 
 ## Set up once
 
