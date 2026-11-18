@@ -125,7 +125,8 @@ def test_winpe_plan_binds_partitions_bundle_hashes_and_check_mode(
 
 @pytest.mark.skipif(os.name != "nt", reason="Runs Windows PowerShell")
 @pytest.mark.parametrize(
-    "failure", ["", "duplicate", "digest", "apply", "apply-failure"]
+    "failure",
+    ["", "duplicate", "digest", "apply", "apply-failure", "mount", "wrong-mount"],
 )
 def test_winpe_startup_checks_before_running_with_changed_letters(
     tmp_path: Path, failure: str
@@ -170,13 +171,35 @@ def test_winpe_startup_checks_before_running_with_changed_letters(
     script = script.replace(guard, "    if ($false) {")
     reboot = next(line for line in script.splitlines() if "wpeutil.exe" in line)
     script = script.replace(reboot, "    & $env:WUO_TEST_REBOOT")
+    script = script.replace(
+        "Join-Path $env:SystemRoot 'Temp\\wuo-assign.txt'",
+        "Join-Path $PSScriptRoot 'wuo-assign.txt'",
+    )
+    script = script.replace(
+        "(Join-Path $env:SystemRoot 'System32\\diskpart.exe')", "$env:WUO_TEST_DISKPART"
+    ).replace(
+        "(Join-Path $env:SystemRoot 'System32\\mountvol.exe')", "$env:WUO_TEST_MOUNTVOL"
+    )
+    diskpart_stub = tmp_path / "diskpart-stub.cmd"
+    diskpart_stub.write_text("@exit /b 0\n", encoding="ascii")
+    mountvol_stub = tmp_path / "mountvol-stub.cmd"
+    efi_path = "\\\\?\\Volume{5212a482-d3b6-475d-891a-97e69dbd99b7}\\"
+    wrong_path = "\\\\?\\Volume{35d4d0ba-9ab3-4b0f-b38e-4d29917d1730}\\"
+    mountvol_stub.write_text(
+        '@if "%WUO_TEST_FAILURE%"=="wrong-mount" (\n'
+        f"  echo {wrong_path}\n"
+        ") else (\n"
+        f"  echo {efi_path}\n"
+        ")\n@exit /b 0\n",
+        encoding="ascii",
+    )
     reboot_stub = tmp_path / "reboot-stub.cmd"
     reboot_stub.write_text(
         '@echo reboot>>"%WUO_TEST_TRACE%"\n@exit /b 0\n', encoding="ascii"
     )
     prefix = f"""
 $drives = @(Get-PSDrive -PSProvider FileSystem | Select-Object -ExpandProperty Name)
-$letters = @('R','T','U','V','W','Y','Z') | Where-Object {{ $_ -notin $drives }}
+$letters = @('R','S','T','U','V','W','Y','Z') | Where-Object {{ $_ -notin $drives }}
 if ($letters.Count -lt 2) {{ throw 'The test needs two unused PowerShell drive names.' }}
 New-PSDrive -Name $letters[0] -PSProvider FileSystem -Root $env:WUO_TEST_VOLUME | Out-Null
 $partitions = @(
@@ -184,7 +207,14 @@ $partitions = @(
     [pscustomobject]@{{ Guid='{EFI_PARTITION}'; DriveLetter=$letters[1]; GptType='c12a7328-f81f-11d2-ba4b-00a0c93ec93b' }}
 )
 if ($env:WUO_TEST_FAILURE -eq 'duplicate') {{ $partitions += $partitions[0] }}
+if ($env:WUO_TEST_FAILURE.EndsWith('mount')) {{
+    $partitions[1].DriveLetter = $null
+    $partitions[1] | Add-Member -NotePropertyName AccessPaths -NotePropertyValue @('{efi_path}')
+    $letters[1] = @('S','T','U','V','W','Y','Z','R','Q','P','O','N','M','L','K','J','I','H','G','F','E','D','C') |
+        Where-Object {{ $_ -notin $drives -and $_ -ne $letters[0] }} | Select-Object -First 1
+}}
 function Get-Partition {{ $partitions }}
+function Get-Volume {{}}
 Write-Host ('Test letters: ' + $letters[0] + ' ' + $letters[1])
 """
     launch = tmp_path / "wuo-startup.ps1"
@@ -205,17 +235,22 @@ Write-Host ('Test letters: ' + $letters[0] + ' ' + $letters[1])
             "WUO_TEST_TRACE": str(trace),
             "WUO_TEST_FAILURE": failure,
             "WUO_TEST_REBOOT": str(reboot_stub),
+            "WUO_TEST_DISKPART": str(diskpart_stub),
+            "WUO_TEST_MOUNTVOL": str(mountvol_stub),
         },
         capture_output=True,
         text=True,
         timeout=30,
         check=False,
     )
-    if failure in {"duplicate", "digest"}:
+    if failure in {"duplicate", "digest", "wrong-mount"}:
         assert result.returncode == 1, result.stdout + result.stderr
-        assert (
-            "found 2" if failure == "duplicate" else "Bundle digest mismatch"
-        ) in result.stdout
+        message = {
+            "duplicate": "found 2",
+            "digest": "Bundle digest mismatch",
+            "wrong-mount": "did not resolve to the expected partition",
+        }
+        assert message[failure] in result.stdout
         assert not trace.exists()
     else:
         target, efi = result.stdout.splitlines()[0].split(": ")[1].split()
@@ -224,10 +259,10 @@ Write-Host ('Test letters: ' + $letters[0] + ' ' + $letters[1])
             expected.append(f"apply {target}: {efi}:")
         if failure == "apply":
             expected.append("reboot")
-        assert trace.read_text().splitlines() == expected
         assert result.returncode == (1 if failure == "apply-failure" else 0), (
             result.stdout + result.stderr
         )
+        assert trace.read_text().splitlines() == expected
 
 
 def test_iso_builder_uses_adk_paths_and_discards_on_component_failure(

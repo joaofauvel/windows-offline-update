@@ -23,8 +23,9 @@ function Get-PartitionLetter($Partition) {
     try {
         & (Join-Path $env:SystemRoot 'System32\diskpart.exe') /s $script | Out-Host
         if ($LASTEXITCODE -ne 0) { throw "DiskPart could not assign ${letter}: to the selected partition." }
-        $resolved = @(Get-Partition -DriveLetter $letter)
-        if ($resolved.Count -ne 1 -or [guid]$resolved[0].Guid -ne [guid]$Partition.Guid) {
+        $volumePath = (& (Join-Path $env:SystemRoot 'System32\mountvol.exe') "${letter}:\" /L | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0 -or !$volumePath -or
+            $volumePath -notin (Find-Partition ([guid]$Partition.Guid)).AccessPaths) {
             throw "The new drive letter ${letter}: did not resolve to the expected partition."
         }
         "${letter}:"
