@@ -137,7 +137,7 @@ exit /b 0
 
 :dism_add
 (>>"%LOG%" echo Starting DISM package "%PACKAGE%") || exit /b 1
-"%SYS%\dism.exe" /English /Image:%TARGET%\ /SysDriveDir:%EFI%\ /ScratchDir:"%JOB%\scratch" /LogPath:"%JOB%\dism.log" /Add-Package /PackagePath:"%PACKAGE%" /NoRestart >>"%LOG%" 2>&1
+"%SYS%\dism.exe" /English /Image:%TARGET%\ /SysDriveDir:%EFI%\ /ScratchDir:"%JOB%\scratch" /LogPath:"%JOB%\dism.log" @@DISM_ADD@@ /NoRestart >>"%LOG%" 2>&1
 set "DISM_STATUS=%errorlevel%"
 (>>"%LOG%" echo DISM exit status %DISM_STATUS% for "%PACKAGE%") || exit /b 1
 if "%DISM_STATUS%"=="0" exit /b 0

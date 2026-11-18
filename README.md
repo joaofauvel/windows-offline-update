@@ -67,6 +67,40 @@ dism /Image:W:\ /Add-Driver /Driver:D:\drivers\example.inf
 Compare the driver information with the offered hardware ID, architecture,
 and version before staging it. Check the driver version after Windows restarts.
 
+## Run a prepared driver job in WinPE
+
+The WinPE builder requires the [Microsoft ADK Deployment Tools and matching WinPE add-on](https://learn.microsoft.com/en-us/windows-hardware/get-started/adk-install) on x64 Windows. Use an elevated Windows terminal and select one or more driver export directories ending in `-wua`.
+
+```powershell
+uv run --locked wuo update --only drivers --output C:\WinOfflineUpdates
+uv run --locked wuo prepare-drivers --export C:\WinOfflineUpdates\your-driver-export-r1-wua --output C:\WinOfflineJobs\driver-job --profile C:\path\to\hooks.toml
+uv run --locked wuo winpe --bundle C:\WinOfflineJobs\driver-job --output C:\WinOfflineJobs\driver-check.iso --check-only
+```
+
+Repeat `--export` for additional drivers. `--profile` accepts any valid hook
+profile, including its pre- and post-hooks. Keep the bundle directory on the
+target Windows volume and accessible to WinPE. Prepare an older WinRE
+bundle again if you want to use it with the ISO builder. Preview or download Defender and Windows Security
+platform files with `update --only defender --only security-platform`.
+
+For a lab trial, prepare the bundle and check ISO for the disposable VM's
+Windows installation. On the intended PC, select the boot medium once from
+the firmware boot menu. WinPE identifies Windows and the active EFI partition using
+the GPT IDs captured in Windows, then verifies the bundle hashes and recovery
+target. Build a separate apply ISO using the same command with a new output
+filename and omit `--check-only`. An apply ISO starts its named job on boot
+and reboots on success. Use `--bootex` if the target requires UEFI CA 2023
+boot media and the installed ADK supports that option.
+
+```powershell
+uv run --locked wuo verify --bundle C:\WinOfflineJobs\driver-job --post-boot
+```
+
+Post-boot verification checks the recorded INF files in the driver store and
+checks the post-hooks. Windows Plug and Play selects the active driver.
+Inspect the job log under
+`C:\ProgramData\WinOfflineUpdate\jobs` if WinPE stops.
+
 ## Find and download packages
 
 ```powershell

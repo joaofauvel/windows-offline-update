@@ -215,6 +215,41 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--profile", type=Path, help="Optional local registry-hook TOML."
     )
     prepare.add_argument("--extractor", default="7z.exe", help="Path to the 7-Zip CLI.")
+    drivers = commands.add_parser(
+        "prepare-drivers",
+        help="Prepare selected signed driver exports for offline servicing.",
+    )
+    drivers.add_argument(
+        "--export",
+        type=Path,
+        action="append",
+        required=True,
+        help="Driver export directory. Repeat for multiple drivers.",
+    )
+    drivers.add_argument(
+        "--output",
+        type=Path,
+        required=True,
+        help="New bundle directory on the target Windows volume.",
+    )
+    drivers.add_argument(
+        "--profile", type=Path, help="Optional local registry-hook TOML."
+    )
+    winpe = commands.add_parser(
+        "winpe", help="Build a bootable WinPE ISO for a prepared recovery bundle."
+    )
+    winpe.add_argument("--bundle", type=Path, required=True)
+    winpe.add_argument("--output", type=Path, required=True, help="New .iso file.")
+    winpe.add_argument(
+        "--check-only",
+        action="store_true",
+        help="Verify in WinPE and pause before servicing.",
+    )
+    winpe.add_argument(
+        "--bootex",
+        action="store_true",
+        help="Use Windows UEFI CA 2023 boot media with a compatible ADK.",
+    )
     verify = commands.add_parser(
         "verify", help="Verify recovery bundle files and optional post-boot state."
     )
@@ -235,6 +270,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(feeds.WINDOWS_MEDIA)
         return 0
     try:
+        if args.command == "prepare-drivers":
+            plan = bundle.prepare_drivers(
+                args.export, target.read_target(), args.output, profile=args.profile
+            )
+            print(
+                f"Driver bundle prepared at {args.output} ({len(plan.commands)} INF files)."
+            )
+            return 0
+        if args.command == "winpe":
+            from .winpe import build_iso
+
+            build_iso(
+                args.bundle, args.output, check_only=args.check_only, bootex=args.bootex
+            )
+            print(f"Bootable WinPE ISO prepared at {args.output}.")
+            return 0
         if args.command == "verify":
             bundle.verify(args.bundle, post_boot=args.post_boot)
             print("Verification passed.")
