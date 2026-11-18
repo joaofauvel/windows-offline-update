@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 import json
+import os
 import sys
 import tempfile
 from collections.abc import Sequence
@@ -13,6 +14,8 @@ lazy import httpx
 
 from .models import DownloadManifest, Update
 lazy from . import bundle, catalog, downloads, feeds, target
+lazy from .hook_registry import HookRegistry
+lazy from .hook_selection import describe_selection, read_selection, resolve_selection
 lazy from .update import PreparedUpdates, run_update
 lazy from .winre_menu import Menu
 
@@ -52,7 +55,30 @@ async def _update(client: httpx.AsyncClient, args: argparse.Namespace) -> int:
     menu = Menu(identity)
     configured = not args.manual and menu.installed
     output = args.output or Path.home() / _DOWNLOADS
-    profile = args.profile or (menu.profile if configured else None)
+    if configured and not args.dry_run:
+        allow_restart = not (args.hook or args.profile or args.no_hooks)
+        if not await asyncio.to_thread(menu.resume, allow_restart=allow_restart):
+            return 0
+    with tempfile.TemporaryDirectory(prefix="wuo-hooks-") as temporary:
+        if args.hook or args.profile or args.no_hooks or not menu.installed:
+            selected = resolve_selection(args.hook, args.profile, Path(temporary))
+        else:
+            selected = read_selection(menu.profile)
+        await asyncio.to_thread(describe_selection, selected)
+        return await _stage_update(
+            client, args, identity, menu, configured, output, selected.path
+        )
+
+
+async def _stage_update(
+    client: httpx.AsyncClient,
+    args: argparse.Namespace,
+    identity: target.TargetIdentity,
+    menu: Menu,
+    configured: bool,
+    output: Path,
+    profile: Path | None,
+) -> int:
 
     async def scan(prepared: PreparedUpdates | None = None) -> int:
         return await run_update(
@@ -71,8 +97,6 @@ async def _update(client: httpx.AsyncClient, args: argparse.Namespace) -> int:
         return await scan()
     if args.dry_run:
         return await scan(PreparedUpdates(menu.root))
-    if not await asyncio.to_thread(menu.resume):
-        return 0
 
     with tempfile.TemporaryDirectory(dir=menu.root, prefix="scan-") as temporary:
         prepared = PreparedUpdates(Path(temporary))
@@ -191,6 +215,45 @@ async def _run(args: argparse.Namespace) -> int:
     return 0
 
 
+def _hooks_command(args: argparse.Namespace) -> int:
+    registry = HookRegistry()
+    if args.hook_action == "add":
+        profiles = registry.add(args.repo, args.name, args.ref)
+        print(f"Registered {args.name}. Select a profile with --hook.")
+    elif args.hook_action == "refresh":
+        profiles = registry.refresh(args.source)
+        print(
+            "Available profiles refreshed. Saved selections keep their captured contents."
+        )
+    elif args.hook_action == "remove":
+        registry.remove(args.source)
+        print(
+            f"Removed source {args.source}. Saved profiles keep their captured contents."
+        )
+        profiles = []
+    else:
+        profiles = registry.list_profiles()
+    for profile in profiles:
+        origin = profile.origin
+        print(f"{origin.name}  revision={origin.revision}  sha256={origin.sha256}")
+        if args.hook_action == "list":
+            freshness = registry.check(origin)
+            print(f"  Source content: {freshness.state}. {freshness.detail}")
+            if freshness.state in {"changed", "removed"}:
+                print(
+                    f"  Warning: refresh available profiles with wuo hooks refresh {origin.source}."
+                )
+    if os.name == "nt":
+        try:
+            menu = Menu(target.read_target(read_loader=False))
+            menu.describe_hooks(registry)
+        except (ValueError, OSError) as error:
+            print(f"Could not read the saved selection: {error}")
+    else:
+        print("Saved Windows selections are available on Windows through wuo status.")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="wuo",
@@ -200,7 +263,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     setup = commands.add_parser(
         "setup", help="Add Windows Offline Update to the recovery menu."
     )
-    setup.add_argument("--profile", type=Path, help="Registry-hook profile to save.")
+    setup_hooks = setup.add_mutually_exclusive_group()
+    setup_hooks.add_argument(
+        "--profile", type=Path, help="Save a local registry-hook profile."
+    )
+    setup_hooks.add_argument(
+        "--hook",
+        action="append",
+        default=[],
+        help="Save a named profile, for example official/usb4. Repeat to combine.",
+    )
+    setup_hooks.add_argument(
+        "--no-hooks", action="store_true", help="Save a selection with no hooks."
+    )
     workflow = commands.add_parser(
         "update",
         help="Find and stage updates for this PC.",
@@ -236,10 +311,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         type=Path,
         help="Choose a download folder.",
     )
-    workflow.add_argument(
+    update_hooks = workflow.add_mutually_exclusive_group()
+    update_hooks.add_argument(
         "--profile",
         type=Path,
         help="Use a registry-hook profile for this run.",
+    )
+    update_hooks.add_argument(
+        "--hook",
+        action="append",
+        default=[],
+        help="Use a named profile for this run. Repeat to combine.",
+    )
+    update_hooks.add_argument(
+        "--no-hooks", action="store_true", help="Run this update without hooks."
     )
     workflow.add_argument(
         "--extractor", default="7z.exe", help="Path to the 7-Zip CLI."
@@ -260,6 +345,27 @@ def main(argv: Sequence[str] | None = None) -> int:
     commands.add_parser(
         "remove", help="Remove Windows Offline Update from the recovery menu."
     )
+    hook_commands = commands.add_parser(
+        "hooks", help="List profiles and manage Git sources."
+    )
+    hook_actions = hook_commands.add_subparsers(
+        dest="hook_action", required=True, metavar="COMMAND"
+    )
+    hook_actions.add_parser("list", help="Show available and selected hooks.")
+    hook_add = hook_actions.add_parser(
+        "add", help="Register profiles from a Git repository."
+    )
+    hook_add.add_argument("repo")
+    hook_add.add_argument("--name", required=True, help="Source name.")
+    hook_add.add_argument("--ref", default="HEAD", help="Branch or tag to track.")
+    hook_refresh = hook_actions.add_parser(
+        "refresh", help="Refresh available profiles."
+    )
+    hook_refresh.add_argument("source", nargs="?")
+    hook_remove = hook_actions.add_parser(
+        "remove", help="Remove a source from discovery."
+    )
+    hook_remove.add_argument("source")
     search = commands.add_parser(
         "search", help="Find published Microsoft Catalog updates."
     )
@@ -357,10 +463,25 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(feeds.WINDOWS_MEDIA)
         return 0
     try:
+        if args.command == "hooks":
+            return _hooks_command(args)
         if args.command in {"setup", "status", "remove"}:
             menu = Menu(target.read_target(read_loader=False))
             if args.command == "setup":
-                menu.configure("install", args.profile)
+                with tempfile.TemporaryDirectory(prefix="wuo-hooks-") as temporary:
+                    if menu.installed and not (
+                        args.hook or args.profile or args.no_hooks
+                    ):
+                        selected = read_selection(menu.profile)
+                    else:
+                        selected = resolve_selection(
+                            args.hook, args.profile, Path(temporary)
+                        )
+                    registry = HookRegistry()
+                    print("Hooks selected for future jobs")
+                    describe_selection(selected, registry)
+                    menu.configure("install", selected.path)
+                    menu.describe_pending_hooks(registry)
             elif args.command == "remove":
                 menu.remove()
             elif args.discard:

@@ -189,6 +189,36 @@ def _publish_bundle(
         if load_profile(snapshot) != plan.hooks:
             raise ValueError("The profile changed during preparation.")
         plan.paths[snapshot.name], _ = package_hashes(snapshot)
+        metadata = profile.with_name("hooks.json")
+        if metadata.is_file():
+            from .hook_selection import read_selection
+
+            read_selection(profile)
+            shutil.copyfile(metadata, staging / "hooks.json")
+            read_selection(snapshot)
+            plan.paths["hooks.json"], _ = package_hashes(staging / "hooks.json")
+    summary = ["Hooks: none."]
+    if plan.hooks:
+        from .hook_selection import read_selection
+
+        selection = read_selection(profile)
+        summary = ["Enabled hook profiles"]
+        summary.extend(
+            f"  {origin.name}  revision={origin.revision}  sha256={origin.sha256}"
+            for origin in selection.origins
+        )
+        for hook in plan.hooks:
+            registry_root = (
+                "SYSTEM" if hook.scope == "system" else r"SYSTEM\<selected control set>"
+            )
+            summary.append(
+                f"  {hook.phase}: {registry_root}\\{hook.key} /v {hook.name} = {hook.value:#x}"
+            )
+    summary_file = staging / "hooks-summary.txt"
+    summary_file.write_bytes(
+        ("\r\n".join(summary) + "\r\n").encode("ascii", errors="backslashreplace")
+    )
+    plan.paths[summary_file.name], _ = package_hashes(summary_file)
     script = staging / "recovery.cmd"
     script.write_bytes(render_runner(plan).encode("ascii"))
     plan.paths[script.name], _ = package_hashes(script)

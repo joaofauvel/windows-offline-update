@@ -27,6 +27,7 @@ set "HOOK_HIVE=HKLM\WOU_SYSTEM_@@JOB@@"
 call :validate_target || goto unverified
 if /i "%MODE%"=="repair-hooks" goto repair
 call :validate_files || goto bad_files
+if exist "%BUNDLE%hooks-summary.txt" type "%BUNDLE%hooks-summary.txt"
 if /i "%MODE%"=="check" (
     echo Target and package sizes verified. Check made no offline registry or package writes.
     exit /b 0
@@ -47,6 +48,7 @@ echo Offline staging succeeded. Review "%LOG%" and restart when ready.
 exit /b 0
 
 :repair
+if exist "%BUNDLE%hooks-summary.txt" type "%BUNDLE%hooks-summary.txt"
 set "READY="
 if exist "%JOB%\state.ready" set /p "READY="<"%JOB%\state.ready"
 if /i not "%READY%"=="@@JOB@@" goto interrupted

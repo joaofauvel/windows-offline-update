@@ -1,6 +1,6 @@
 [project]
 name = "wuo"
-version = "0.2.0"
+version = "0.3.0"
 description = "Find Windows updates and prepare them for offline servicing"
 readme = "README.md"
 requires-python = ">=3.15"
@@ -26,8 +26,11 @@ Repository = "https://github.com/joaofauvel/windows-offline-update"
 [tool.hatch.build.targets.wheel]
 packages = ["src/win_offline_update"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"hooks" = "win_offline_update/bundled_hooks"
+
 [tool.hatch.build.targets.sdist]
-include = ["/LICENSE", "/README.md", "/hooks/usb4.toml", "/pyproject.toml", "/src/win_offline_update"]
+include = ["/LICENSE", "/README.md", "/hooks", "/pyproject.toml", "/src/win_offline_update"]
 
 [dependency-groups]
 dev = ["mypy>=1.19", "pytest>=9", "ruff>=0.15"]

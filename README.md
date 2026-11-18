@@ -40,15 +40,66 @@ to a copy of it. If setup fails, it attempts to restore the original image and
 registration. If restoration fails, it reports the backup location for manual
 recovery.
 
-Save the USB4 profile as `usb4.toml` if your Windows installation needs those
-USB4 and storage service settings to boot. Setup saves a copy for later updates. [USB4 profile](hooks/usb4.toml)
+If your Windows installation needs the USB4 and storage service settings to
+boot, select the bundled [USB4 profile](hooks/usb4.toml). Setup saves a copy for
+later updates.
 
 ```powershell
-wuo setup --profile .\usb4.toml
+wuo setup --hook official/usb4
 ```
 
-From the checkout, the profile is at `.\hooks\usb4.toml`. Use
-`wuo update --profile <path>` to choose a different profile for one run.
+Repeat `--hook` to combine profiles. Local TOML files also work:
+`wuo setup --profile .\usb4.toml` saves a local profile, and
+`wuo update --profile <path>` selects one for a single update.
+
+## Hook profiles and sources
+
+The `official` profiles are bundled with `wuo` and available without fetching a
+repository. List profiles, saved selections, source revisions and freshness:
+
+```powershell
+wuo hooks list
+```
+
+Register a Git repository to make its profiles available. Only regular TOML
+files directly under its root `hooks/` directory are read. Registration does
+not enable a profile.
+
+```powershell
+wuo hooks add <repo> --name vendor
+wuo setup --hook vendor/name
+```
+
+Add `--ref <branch-or-tag>` when registering a source to track a particular ref.
+Repositories can use HTTPS, SSH or a local path. Git is required to register or
+refresh sources and to check source freshness. Bundled and saved profiles still
+work without Git; freshness checks report when their result is unknown.
+
+Use `wuo update --hook vendor/name` to select a profile for one run, repeating
+`--hook` to combine profiles. Without an override, updates use the saved setup
+selection. Use `wuo update --no-hooks` to explicitly disable hooks for one run.
+
+Setup, update and status show the effective profiles and their registry changes,
+including when no hooks apply. They show a pending job's captured selection
+separately from the saved setup selection. Recovery prints the captured registry
+changes before applying the job.
+
+```powershell
+wuo hooks refresh
+wuo hooks refresh vendor
+wuo hooks remove vendor
+```
+
+Refresh updates available profiles. Saved selections never change automatically;
+rerun setup with `--hook` to save a refreshed selection. Removing a source keeps
+the saved profile copy. Setup, update and status warn when a selected profile has
+changed, was removed, or cannot be checked. A prepared job keeps its captured
+profile until it completes or is explicitly discarded.
+
+To change hooks for a pending job, finish it or clear it with
+`wuo status --discard` before staging a new job. Hook selection flags stop at
+an existing job so that a one-run override cannot restart it with different
+settings.
 
 ## Install updates
 
