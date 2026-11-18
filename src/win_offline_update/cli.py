@@ -156,8 +156,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     workflow.add_argument(
         "--driver-cache",
-        action="store_true",
-        help="Try exporting unavailable Catalog drivers through Windows Update Agent's download cache.",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use Windows Update Agent's download cache as a fallback for unavailable Catalog drivers (default: enabled).",
     )
     workflow.add_argument(
         "--output",

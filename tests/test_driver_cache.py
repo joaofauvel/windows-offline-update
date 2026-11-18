@@ -1,5 +1,6 @@
 import asyncio
 import json
+from argparse import Namespace
 from pathlib import Path
 
 import httpx
@@ -25,6 +26,23 @@ TARGET = TargetIdentity(
 )
 
 
+@pytest.mark.parametrize(
+    ("flags", "expected"),
+    [([], True), (["--driver-cache"], True), (["--no-driver-cache"], False)],
+)
+def test_update_cli_driver_cache_default_and_opt_out(
+    monkeypatch: pytest.MonkeyPatch, flags: list[str], expected: bool
+) -> None:
+    from win_offline_update import cli
+
+    async def run(args: Namespace) -> int:
+        assert args.driver_cache is expected
+        return 0
+
+    monkeypatch.setattr(cli, "_run", run)
+    assert cli.main(["update", *flags]) == 0
+
+
 def test_scan_records_the_driver_revision() -> None:
     data = {
         "status": 2,
@@ -44,7 +62,7 @@ def test_scan_records_the_driver_revision() -> None:
 
 
 @pytest.mark.parametrize("dry_run", [True, False])
-def test_catalog_miss_uses_opt_in_cache_route(
+def test_catalog_miss_uses_default_cache_route(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -69,9 +87,7 @@ def test_catalog_miss_uses_opt_in_cache_route(
     async def run() -> int:
         transport = httpx.MockTransport(lambda _: httpx.Response(404))
         async with httpx.AsyncClient(transport=transport) as client:
-            return await run_update(
-                client, TARGET, tmp_path, driver_cache_fallback=True, dry_run=dry_run
-            )
+            return await run_update(client, TARGET, tmp_path, dry_run=dry_run)
 
     assert asyncio.run(run()) == 0
     assert called == ([] if dry_run else [OFFER])

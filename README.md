@@ -43,9 +43,10 @@ that need full Windows Setup media use Microsoft's download page.
 
 ## Stage a driver offline
 
-In an elevated Windows terminal, use `uvx wuo update --only drivers --driver-cache`
-to try Windows Update Agent's download cache for drivers whose exact offer has
-no public Catalog package. Add `--dry-run` to preview the route. The export
+In an elevated Windows terminal, use `uvx wuo update --only drivers`.
+Windows Update Agent's download cache is the default fallback for drivers whose
+exact offer has no public Catalog package. Use `--no-driver-cache` for a
+Catalog-only run or add `--dry-run` to preview the route. The export
 checks the offered revision, present hardware, and the INF's architecture,
 version, and signature. The `manifest.json` in the export directory lists the
 matching INF under `payload/`. Use the export with the same PC and Windows

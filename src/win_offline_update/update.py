@@ -596,7 +596,7 @@ async def run_update(
     *,
     only: tuple[str, ...] = (),
     dry_run: bool = False,
-    driver_cache_fallback: bool = False,
+    driver_cache_fallback: bool = True,
     profile: Path | None = None,
     extractor: str = "7z.exe",
 ) -> int:
