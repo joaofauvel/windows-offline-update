@@ -5,7 +5,7 @@ Windows Recovery Environment (WinRE).
 
 ## Set up once
 
-Install from the root of this source checkout with `uv tool install .`. If `uv`
+Install with `uv tool install wuo`. If `uv`
 asks you to update your PATH, run `uv tool update-shell` and reopen PowerShell.
 In an administrator PowerShell, run the setup command.
 
@@ -13,18 +13,18 @@ In an administrator PowerShell, run the setup command.
 wuo setup
 ```
 
-You can also run the commands directly from the checkout by replacing `wuo` with
-`uv run --locked wuo`.
+For one-off commands, use `uvx wuo` in place of `wuo`. From a source checkout,
+use `uv run --locked wuo`.
 
 Setup backs up the installed recovery image and adds **Windows Offline Update**
 to a copy of it. Setup restores the original image and registration if it fails.
 
 Pass a registry hook profile to setup to reuse it for every recovery job. Use
 the example if your Windows installation needs its USB4 and storage service
-settings to boot. [USB4 profile](examples/usb4.toml)
+settings to boot. Save the example as `usb4.toml` before running setup. [USB4 profile](examples/usb4.toml)
 
 ```powershell
-wuo setup --profile .\examples\usb4.toml
+wuo setup --profile .\usb4.toml
 ```
 
 ## Install updates
