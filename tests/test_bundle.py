@@ -17,7 +17,9 @@ def november_update() -> Update:
     )
 
 
-def test_kb5132061_orders_ssu_before_target(november_update: Update) -> None:
+def test_known_cumulative_uses_generic_package_eligibility(
+    november_update: Update,
+) -> None:
     from win_offline_update.bundle import resolve_plan
     from win_offline_update.target import TargetIdentity
 
@@ -31,14 +33,16 @@ def test_kb5132061_orders_ssu_before_target(november_update: Update) -> None:
         "22222222-2222-2222-2222-222222222222",
     )
     plan = resolve_plan(november_update, target)
-    assert plan.commands == (
-        "SSU-26100.9971-x64.cab",
-        "packages/windows11.0-kb5132061-x64_aedc878e9e078df2ec7e2cfb98dd5b21831cdbcc.msu",
+    assert plan.commands == tuple(
+        f"packages/{file.name}" for file in november_update.files
     )
-    assert plan.target_revision == 9974
+    assert plan.target_revision == target.revision
+    assert plan.kind == "packages"
 
 
-def test_missing_checkpoint_blocks_apply_plan(november_update: Update) -> None:
+def test_eligibility_does_not_guess_checkpoint_dependencies(
+    november_update: Update,
+) -> None:
     from win_offline_update.bundle import resolve_plan
     from win_offline_update.target import TargetIdentity
 
@@ -51,11 +55,13 @@ def test_missing_checkpoint_blocks_apply_plan(november_update: Update) -> None:
         "11111111-1111-1111-1111-111111111111",
         "22222222-2222-2222-2222-222222222222",
     )
-    with pytest.raises(ValueError, match="checkpoint"):
-        resolve_plan(replace(november_update, files=november_update.files[1:]), target)
+    plan = resolve_plan(
+        replace(november_update, files=november_update.files[1:]), target
+    )
+    assert plan.kind == "packages"
 
 
-def test_unknown_package_stays_manual(november_update: Update) -> None:
+def test_driver_package_requires_driver_servicing(november_update: Update) -> None:
     from win_offline_update.bundle import resolve_plan
     from win_offline_update.target import TargetIdentity
 
@@ -68,7 +74,7 @@ def test_unknown_package_stays_manual(november_update: Update) -> None:
         "11111111-1111-1111-1111-111111111111",
         "22222222-2222-2222-2222-222222222222",
     )
-    with pytest.raises(ValueError, match="manual servicing"):
+    with pytest.raises(ValueError, match="driver servicing"):
         resolve_plan(
             replace(november_update, id="unknown", classification="Drivers"), target
         )

@@ -1,7 +1,8 @@
 # Windows Offline Update
 
-`wuo` finds applicable updates in Windows and installs supported updates from the
-Windows Recovery Environment (WinRE).
+`wuo` finds applicable updates through Windows Update Agent. It installs security
+components in Windows and prepares Windows packages and drivers for installation
+from the Windows Recovery Environment (WinRE).
 
 > [!WARNING]
 > **Experimental software.** **This tool changes Windows recovery configuration
@@ -12,9 +13,9 @@ Windows Recovery Environment (WinRE).
 > recovery media, and any BitLocker recovery keys before using setup or applying
 > updates. Recovery may require another computer and manual repairs.
 > The recovery-menu workflow has been tested in disposable Windows 11 VMs,
-> including a layout with Windows and EFI on separate disks. Hardware-specific
-> validation of that workflow, including USB4 storage and Limine dual boot,
-> remains pending.
+> including a layout with Windows and EFI on separate disks. A USB4 external
+> Windows installation with Limine dual boot has also completed cumulative and
+> driver servicing. This does not establish compatibility with other hardware.
 > 
 > Hook profiles apply registry changes with system-level privileges. Review the
 > profile and confirm that its settings fit your installation before selecting
@@ -101,14 +102,22 @@ settings.
 
 ## Install updates
 
-1. In an administrator PowerShell, run `wuo update`. Use `wuo update --only drivers`
-   to scan for drivers only or `wuo update --dry-run` to preview the scan. When
-   `wuo` prepares a recovery job, accept the prompt to restart into WinRE.
+1. In an administrator PowerShell, run `wuo update`. Security components install
+   in Windows. If Windows requires a restart, restart normally and run the same
+   command again. When `wuo` prepares a recovery job, accept the prompt to restart
+   into WinRE.
 2. In WinRE, choose **Troubleshoot → Windows Offline Update**. The tool checks
    and installs the prepared job, then restarts Windows on success.
 
 On a dual-boot PC, select your usual Windows entry after the restart. Run
-`wuo status` in Windows to check the result.
+`wuo status` in Windows to check the result. Run `wuo update` again after recovery
+to rescan and continue any remaining updates. Windows package jobs precede driver
+jobs; the tool checks the new Windows baseline before preparing the next job.
+
+Use `wuo update --dry-run` to preview without installing. Limit a scan with
+`--only monthly`, `--only dotnet`, `--only drivers`, `--only defender`,
+`--only security-platform`, or `--only features`. Repeat `--only` to combine them.
+Existing Windows Update policies, pauses, and safeguards still affect the offers.
 
 Downloads go to `Downloads\WindowsOfflineUpdates` in your user folder.
 
@@ -119,13 +128,33 @@ To remove the recovery menu entry, run `wuo remove` in an administrator PowerShe
 - **Drivers.** Recovery jobs use signed drivers exported from Windows Update
   Agent. `wuo` checks the offered revision, hardware, architecture, version, and
   signature. Windows Plug and Play selects the active driver after restart.
-- **Cumulative updates.** The recovery workflow supports KB5132061 on eligible
-  Windows 11 25H2 x64 builds `26200.6584` through `26200.9973`. Preparing this
-  update requires `7z.exe` on your PATH or its path passed with `--extractor`.
-- **Other offers.** `wuo update` can also find and download standalone .NET,
-  Defender, Windows Security platform, and other available packages for separate
-  installation. For feature upgrades that require full Windows Setup media, use
-  `wuo media` to get Microsoft's download link.
+- **Cumulative, .NET, and other CBS packages.** Recovery uses standalone Microsoft
+  MSU/CAB payloads, their actual package identities and architecture, and native
+  DISM servicing. There is no KB or OS-build allowlist. Checkpoint MSUs remain
+  together so DISM can find prerequisite packages. Preparation requires `7z.exe`
+  on PATH or its path passed with `--extractor`. Missing standalone payloads,
+  unidentified metadata, or dependencies whose order cannot be established are
+  reported as incomplete.
+- **Defender and Windows Security.** The exact offered revisions of Defender
+  platform (KB4052623), Windows Security app/service (KB5007651), and Defender
+  intelligence with its included engine (KB2267602) install through Windows
+  Update Agent. Platform updates precede intelligence. Each result is recorded
+  and independently checked; a restart requirement stops the next phase.
+- **Feature updates.** Standalone CBS enablement packages can use recovery
+  servicing. Full upgrades that require Windows Setup remain unsupported. In
+  particular, a post-upgrade script runs too late for hooks needed before the new
+  Windows installation first boots. See the [feature-upgrade hook requirements](docs/feature-upgrades.md).
+  `wuo media` opens Microsoft's media link.
+- **Other installers.** Downloading a package does not count as installing it.
+  Offers without a supported installation route are listed with their files and
+  remain incomplete.
+
+Selected registry hooks also run before and after the Windows security phase.
+The tool captures the profile, saves SYSTEM backups for both phases, uses the
+default control set, and verifies written DWORDs. Post hooks are attempted even
+when the native installer fails. It never schedules a Windows restart from this
+phase. Results, captured hooks and backups are kept under
+`C:\ProgramData\WinOfflineUpdate\menu` on the Windows volume.
 
 ## Download manually
 

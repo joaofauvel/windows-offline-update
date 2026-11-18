@@ -5,22 +5,31 @@ import re
 import shutil
 import subprocess
 import tempfile
+import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal
 from uuid import UUID, uuid4
 
-from .downloads import atomic_json, matches_digest, package_hashes, safe_name
+from .downloads import (
+    atomic_json,
+    checked_url,
+    matches_digest,
+    package_hashes,
+    safe_name,
+)
 from .hooks import Hook, load_profile
 from .models import Update, UpdateFile
 from .recovery import render_runner
 from .target import TargetIdentity, read_target
 
-KB_ID = "950b2422-28ad-4493-a96c-03725fd0d8c2"
-SSU = "SSU-26100.9971-x64.cab"
-SSU_SHA256 = "b86aa6e031fa301464cd119f2f652c4192ad5b344ec6e1b4247d0d9ce528e764"
-PACKAGE_PREFIXES = ("windows11.0-kb5043080-x64_", "windows11.0-kb5132061-x64_")
 JOBS_PATH = Path("ProgramData/WinOfflineUpdate/jobs")
+_CBS_IDENTITY = re.compile(
+    r"[A-Za-z0-9][A-Za-z0-9._-]{0,199}~[a-fA-F0-9]{16}~"
+    r"(?P<architecture>amd64|x86|arm64|neutral)~[A-Za-z0-9-]{0,35}~"
+    r"[0-9]+(?:\.[0-9]+){3}"
+)
+_CBS_ARCHITECTURES = {"x64": "amd64", "x86": "x86", "arm64": "arm64"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,6 +37,7 @@ class ServicingPlan:
     files: tuple[UpdateFile, ...]
     commands: tuple[str, ...]
     target_revision: int
+    kind: Literal["packages"] = "packages"
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,36 +50,333 @@ class BundlePlan:
     hooks: tuple[Hook, ...]
     paths: dict[str, str]
     size: dict[str, int]
-    kind: Literal["cumulative", "drivers"] = "cumulative"
+    kind: Literal["cumulative", "drivers", "packages"] = "cumulative"
+    package_identities: tuple[str, ...] = ()
 
 
 def resolve_plan(update: Update, target: TargetIdentity) -> ServicingPlan:
-    if update.id != KB_ID or update.kb != "KB5132061" or update.architecture != "x64":
-        raise ValueError("This update currently requires manual servicing.")
-    if (target.release, target.build, target.architecture) != (
-        "25H2",
-        26200,
-        "x64",
-    ) or not 6584 <= target.revision < 9974:
+    """Check eligibility without reading files or consulting the running OS."""
+    if update.classification.casefold() == "drivers":
+        raise ValueError("Driver CABs require driver servicing, not package servicing.")
+    if target.architecture not in _CBS_ARCHITECTURES or update.architecture not in {
+        None,
+        target.architecture,
+        "neutral",
+    }:
+        raise ValueError("Package architecture does not match the Windows target.")
+    try:
+        UUID(update.id)
+    except (ValueError, AttributeError) as error:
         raise ValueError(
-            "KB5132061 requires a supported 25H2 x64 baseline older than 26200.9974."
+            "This update currently requires manual servicing: invalid update ID."
+        ) from error
+    if not update.files:
+        raise ValueError(
+            "No standalone MSU/CAB package is available for offline servicing."
         )
-    selected = []
-    for prefix in PACKAGE_PREFIXES:
-        candidates = [
-            item
-            for item in update.files
-            if re.fullmatch(re.escape(prefix) + r"[a-f0-9]{40}\.msu", item.name)
-            and item.sha256
-        ]
-        if len(candidates) != 1:
+    names: set[str] = set()
+    for file in update.files:
+        if not safe_name(file.name) or file.name.casefold() in names:
+            raise ValueError("Unsafe or duplicate offline package filename.")
+        names.add(file.name.casefold())
+        if Path(file.name).suffix.casefold() not in {".msu", ".cab"}:
             raise ValueError(
-                "A Microsoft-verified checkpoint or cumulative package is missing."
+                "Offline package servicing supports CBS MSU/CAB payloads only."
             )
-        selected.append(candidates[0])
-    if len(update.files) != len(selected):
-        raise ValueError("Unexpected packages in the Microsoft release file list.")
-    return ServicingPlan(tuple(selected), (SSU, f"packages/{selected[-1].name}"), 9974)
+        checked_url(file.url)
+        if not (file.sha256 or file.sha1) or any(
+            digest is not None and re.fullmatch(pattern, digest) is None
+            for digest, pattern in (
+                (file.sha256, r"[a-f0-9]{64}"),
+                (file.sha1, r"[a-f0-9]{40}"),
+            )
+        ):
+            raise ValueError("The offline package has no valid Microsoft digest.")
+    return ServicingPlan(
+        update.files,
+        tuple(f"packages/{file.name}" for file in update.files),
+        target.revision,
+        kind="packages",
+    )
+
+
+def _canonical_identity(identity: str, architecture: str) -> str:
+    match = _CBS_IDENTITY.fullmatch(identity)
+    if match is None:
+        raise ValueError("Windows returned an invalid canonical CBS package identity.")
+    if match["architecture"] not in {_CBS_ARCHITECTURES.get(architecture), "neutral"}:
+        raise ValueError(
+            "The CBS package architecture does not match the Windows target."
+        )
+    return identity
+
+
+def _package_info(
+    target: TargetIdentity, *, path: Path | None = None, identity: str | None = None
+) -> tuple[str, str]:
+    """Read package metadata only; never stage or install a package here."""
+    dism = target.windows / "Sysnative/dism.exe"
+    if not dism.is_file():
+        dism = target.windows / "System32/dism.exe"
+    argument = (
+        f"/PackagePath:{path}" if path is not None else f"/PackageName:{identity}"
+    )
+    try:
+        result = subprocess.run(
+            [str(dism), "/English", "/Online", "/Get-PackageInfo", argument],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+    except OSError as error:
+        raise ValueError(
+            "Native Windows DISM is required to inspect CBS packages."
+        ) from error
+    if result.returncode:
+        raise ValueError(
+            f"Windows DISM could not inspect the CBS package ({result.returncode}): "
+            f"{path.name if path is not None else identity}"
+        )
+    identities = re.findall(
+        r"^\s*Package Identity\s*:\s*(.*?)\s*$", result.stdout, re.M
+    )
+    states = re.findall(r"^\s*State\s*:\s*(.*?)\s*$", result.stdout, re.M)
+    if len(identities) != 1 or len(states) != 1:
+        raise ValueError(
+            "Windows returned incomplete CBS package identity/state metadata."
+        )
+    if states[0].casefold() not in {
+        "not present",
+        "uninstall pending",
+        "staged",
+        "resolved",
+        "removed",
+        "installed",
+        "install pending",
+        "superseded",
+        "partially installed",
+    }:
+        raise ValueError("Windows returned an unrecognized CBS package state.")
+    actual = _canonical_identity(identities[0], target.architecture)
+    if path is not None:
+        applicability = re.findall(
+            r"^\s*Applicable\s*:\s*(.*?)\s*$", result.stdout, re.M
+        )
+        if len(applicability) != 1 or applicability[0].casefold() != "yes":
+            raise ValueError(
+                "Windows DISM did not confirm package applicability to this target: "
+                f"{path.name} ({applicability[0] if len(applicability) == 1 else 'missing metadata'})."
+            )
+    if identity is not None and actual.casefold() != identity.casefold():
+        raise ValueError("Windows returned a different CBS package identity.")
+    return actual, states[0]
+
+
+def _archive_members(exe: str, path: Path) -> tuple[str, ...]:
+    listing = subprocess.run(
+        [exe, "l", "-slt", "-ba", "-sccUTF-8", str(path)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    members = re.findall(r"^Path = (.+)$", listing.stdout, re.M)
+    if (
+        listing.returncode != 0
+        or not members
+        or len({member.casefold() for member in members}) != len(members)
+        or re.search(r"^(?:Symbolic Link|Hard Link) =", listing.stdout, re.M)
+    ):
+        raise ValueError(
+            "Package archive has an unsafe or unreadable member inventory."
+        )
+    return tuple(members)
+
+
+def _extract_member(exe: str, archive: Path, member: str, output: Path) -> Path:
+    if not safe_name(member):
+        raise ValueError("Unsafe package archive member filename.")
+    extraction = subprocess.run(
+        [exe, "e", str(archive), member, f"-o{output}", "-y"],
+        capture_output=True,
+        check=False,
+    )
+    extracted = output / member
+    if (
+        extraction.returncode != 0
+        or not extracted.is_file()
+        or extracted.is_symlink()
+        or extracted.is_junction()
+        or not extracted.resolve().is_relative_to(output.resolve())
+    ):
+        raise ValueError("Could not extract a regular package metadata file.")
+    return extracted
+
+
+def _manifest_identity(path: Path, architecture: str) -> str:
+    content = path.read_bytes()
+    if b"<!DOCTYPE" in content.upper() or b"<!ENTITY" in content.upper():
+        raise ValueError("Unsupported CBS manifest XML declarations.")
+    try:
+        root = ET.fromstring(content)
+    except ET.ParseError as error:
+        raise ValueError("The main CBS package manifest is not valid XML.") from error
+    namespace = "{urn:schemas-microsoft-com:asm.v3}"
+    identities = root.findall(f"{namespace}assemblyIdentity")
+    if (
+        root.tag != f"{namespace}assembly"
+        or len(identities) != 1
+        or len(root.findall(f"{namespace}package")) != 1
+    ):
+        raise ValueError(
+            "The main CBS package has no unambiguous root package identity."
+        )
+    fields = identities[0].attrib
+    try:
+        language = fields["language"]
+        identity = "~".join(
+            (
+                fields["name"],
+                fields["publicKeyToken"],
+                fields["processorArchitecture"],
+                "" if language == "neutral" else language,
+                fields["version"],
+            )
+        )
+    except KeyError as error:
+        raise ValueError("The root CBS package identity is incomplete.") from error
+    return _canonical_identity(identity, architecture)
+
+
+def _msu_identities(
+    path: Path, target: TargetIdentity, scratch: Path, extractor: str
+) -> tuple[str, ...]:
+    exe = shutil.which(extractor)
+    if exe is None:
+        raise ValueError("MSU inspection requires the 7-Zip command-line extractor.")
+    members = _archive_members(exe, path)
+    if not all(safe_name(member) for member in members):
+        raise ValueError("MSU archive has unsafe member filenames or subdirectories.")
+    scratch.mkdir()
+    identities: list[str] = []
+    image_metadata = False
+    image_members = [
+        member
+        for member in members
+        if Path(member).suffix.casefold() in {".wim", ".esd"}
+    ]
+    payloads = [
+        member
+        for member in members
+        if Path(member).suffix.casefold() in {".cab", ".wim", ".esd"}
+        and member.casefold() != "wsusscan.cab"
+    ]
+    for index, member in enumerate(payloads):
+        archive = _extract_member(exe, path, member, scratch)
+        inner = {name.casefold(): name for name in _archive_members(exe, archive)}
+        if "update.mum" not in inner:
+            if archive.suffix.casefold() == ".wim":
+                raise ValueError(
+                    "The main WIM package has no root CBS package manifest."
+                )
+            # Deployment helpers and aggregated/MSIX metadata are not CBS
+            # packages. They remain inside the original MSU for DISM to use.
+            continue
+        if archive.suffix.casefold() == ".cab":
+            identities.append(_package_info(target, path=archive)[0])
+            continue
+        if "update.cat" not in inner:
+            raise ValueError("The main WIM/ESD package has no root package catalog.")
+        metadata = scratch / f"metadata-{index}"
+        metadata.mkdir()
+        manifest = _extract_member(exe, archive, inner["update.mum"], metadata)
+        _extract_member(exe, archive, inner["update.cat"], metadata)
+        expected = _manifest_identity(manifest, target.architecture)
+        try:
+            actual, _ = _package_info(target, path=metadata)
+        except ValueError as error:
+            raise ValueError(
+                "Native DISM could not verify the expanded main WIM/ESD package "
+                f"metadata; this package format requires another servicing route: {error}"
+            ) from error
+        if actual.casefold() != expected.casefold():
+            raise ValueError(
+                "The main CBS manifest identity differs from native DISM metadata."
+            )
+        identities.append(actual)
+        image_metadata = True
+    if not identities or (image_members and not image_metadata):
+        raise ValueError("The MSU contains no verified main CBS package metadata.")
+    return tuple(identities)
+
+
+def _inspect_packages(
+    plan: ServicingPlan,
+    target: TargetIdentity,
+    staging: Path,
+    scratch: Path,
+    extractor: str,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Identify each complete payload; DISM orders checkpoint MSUs at apply time."""
+    inventory: list[tuple[str, tuple[str, ...]]] = []
+    for index, file in enumerate(plan.files):
+        path = staging / "packages" / file.name
+        identities = (
+            (_package_info(target, path=path)[0],)
+            if path.suffix.casefold() == ".cab"
+            else _msu_identities(
+                path, target, scratch / f"inspection-{index}", extractor
+            )
+        )
+        if len(set(identities)) != len(identities):
+            raise ValueError("The payload contains duplicate CBS package identities.")
+        inventory.append((f"packages/{file.name}", identities))
+    identities = tuple(
+        dict.fromkeys(identity for _, group in inventory for identity in group)
+    )
+    # Multiple MSUs from a Catalog entry can be a checkpoint chain. Select the
+    # highest identity version of the same package family as the target; retain
+    # the originals beside it so DISM discovers prerequisites itself.
+    if len(inventory) > 1:
+        families = [
+            {identity.rsplit("~", 1)[0].casefold() for identity in group}
+            for _, group in inventory
+        ]
+        common = set.intersection(*families)
+        common = {
+            family
+            for family in common
+            if not family.split("~", 1)[0].startswith("package_for_servicingstack")
+        }
+        if len(common) != 1 or any(
+            not name.lower().endswith(".msu") for name, _ in inventory
+        ):
+            raise ValueError(
+                "Multiple independent CBS payloads need an explicit prerequisite order; "
+                "prepare them as separate update jobs."
+            )
+
+        # SSUs can differ between checkpoint MSUs; a shared family proves the
+        # target chain without using a title, filename, KB or OS-build table.
+        def version(item: tuple[str, tuple[str, ...]]) -> tuple[int, ...]:
+            return max(
+                tuple(int(part) for part in identity.rsplit("~", 1)[1].split("."))
+                for identity in item[1]
+                if identity.rsplit("~", 1)[0].casefold() in common
+            )
+
+        inventory.sort(key=version)
+        if len({version(item) for item in inventory}) != len(inventory):
+            raise ValueError(
+                "The MSUs do not identify distinct checkpoint package versions."
+            )
+        commands = (inventory[-1][0],)
+    else:
+        commands = (inventory[0][0],)
+    return commands, identities
 
 
 def read_update_id(source: Path) -> str:
@@ -106,43 +413,31 @@ def prepare(
         for file in plan.files:
             relative = f"packages/{file.name}"
             path = bundle / relative
-            shutil.copyfile(source / file.name, path)
+            original = source / file.name
+            if original.is_symlink() or not original.is_file():
+                raise ValueError(
+                    f"The package is not a regular source file: {file.name}"
+                )
+            shutil.copyfile(original, path)
             sha256, sha1 = package_hashes(path)
             if not matches_digest(file, sha256, sha1):
                 raise ValueError(f"Microsoft digest mismatch for {file.name}.")
             paths[relative] = sha256
             sizes[relative] = path.stat().st_size
-        exe = shutil.which(extractor)
-        if exe is None:
-            raise ValueError(
-                "The Microsoft package requires the 7-Zip command-line extractor."
-            )
-        extraction = subprocess.run(
-            [exe, "e", str(bundle / plan.commands[-1]), SSU, f"-o{bundle}", "-y"],
-            capture_output=True,
-            check=False,
+        commands, identities = _inspect_packages(
+            plan, target, bundle, Path(scratch), extractor
         )
-        cab = bundle / SSU
-        if extraction.returncode not in {0, 1} or not cab.is_file():
-            raise ValueError(
-                f"Could not extract the verified servicing stack (7-Zip {extraction.returncode})."
-            )
-        digest, _ = package_hashes(cab)
-        if digest != SSU_SHA256:
-            raise ValueError(
-                "Extracted servicing stack does not match the supported package."
-            )
-        paths[SSU] = digest
-        sizes[SSU] = cab.stat().st_size
         result = BundlePlan(
             job_id,
             update,
             target,
-            plan.target_revision,
-            plan.commands,
+            target.revision,
+            commands,
             hooks,
             paths,
             sizes,
+            kind="packages",
+            package_identities=identities,
         )
         _publish_bundle(bundle, output, result, profile)
     return result
@@ -279,9 +574,14 @@ def verify(bundle: Path, *, post_boot: bool = False) -> None:
 
         current = read_target(read_loader=False)
         target = manifest["target"]
-        if (
-            current.machine_guid != target["machine_guid"]
-            or current.build != target["build"]
+        if current.machine_guid != target["machine_guid"]:
+            raise ValueError(
+                "Expected update belongs to a different Windows installation."
+            )
+        if manifest.get("kind") == "packages":
+            _verify_packages_post_boot(current, manifest)
+        elif (
+            current.build != target["build"]
             or current.revision != manifest["target_revision"]
         ):
             raise ValueError(
@@ -306,6 +606,31 @@ def verify(bundle: Path, *, post_boot: bool = False) -> None:
                 raise ValueError(
                     f"Post-boot DWORD assertion failed: {hook['key']} / {hook['name']}"
                 )
+
+
+def _verify_packages_post_boot(
+    current: TargetIdentity, manifest: dict[str, object]
+) -> None:
+    job_id = str(UUID(str(manifest.get("id"))))
+    ready = current.windows.parent / JOBS_PATH / job_id / "state.ready"
+    if not ready.is_file() or ready.read_text(encoding="ascii").strip() != job_id:
+        raise ValueError("The offline package job has no successful servicing marker.")
+    identities = manifest.get("package_identities")
+    if (
+        not isinstance(identities, list)
+        or not identities
+        or not all(isinstance(identity, str) for identity in identities)
+    ):
+        raise ValueError("The offline package job has no canonical CBS inventory.")
+    for identity in identities:
+        if not isinstance(identity, str):
+            raise ValueError("Invalid canonical CBS package identity.")
+        _canonical_identity(identity, current.architecture)
+        _, state = _package_info(current, identity=identity)
+        if state.casefold() not in {"installed", "superseded"}:
+            raise ValueError(
+                f"CBS package is not verified Installed/Superseded after boot: {identity} ({state})."
+            )
 
 
 def _verify_drivers_post_boot(

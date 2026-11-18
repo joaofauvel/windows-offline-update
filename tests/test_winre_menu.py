@@ -12,6 +12,13 @@ OWNER = "9e1379fb-31bc-4c97-b14a-52aed0371c44"
 LOADER = "32df251e-0f11-4e78-8559-23308eb4e23c"
 
 
+@pytest.fixture(autouse=True)
+def no_host_restart_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "win_offline_update.windows_updates.current_reboot_required", lambda _: False
+    )
+
+
 def test_main_help_shows_the_routine_commands(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -187,3 +194,155 @@ def test_pending_job_cannot_restart_with_conflicting_hook_flags(
         menu.resume(allow_restart=False)
     assert called == []
     assert (root / "pending.id").is_file()
+
+
+def test_stale_menu_cannot_publish_across_new_native_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from win_offline_update import windows_updates
+    from win_offline_update.winre_menu import MENU_PATH, Menu
+
+    identity = TargetIdentity(
+        "25H2", 26200, 9974, "x64", tmp_path / "Windows", OWNER, LOADER
+    )
+    root = tmp_path / MENU_PATH
+    root.mkdir(parents=True)
+    (root / "installed.id").write_text(OWNER, encoding="ascii")
+    state = {"incomplete": False}
+
+    def verify(*_: object) -> windows_updates.WindowsResult | None:
+        if state["incomplete"]:
+            return windows_updates.WindowsResult(
+                False, False, (), root / "windows-updates.json"
+            )
+        return None
+
+    monkeypatch.setattr(windows_updates, "verify", verify)
+    stale = Menu(identity)
+    assert stale.resume()
+    state["incomplete"] = True  # Another scanner finished its native phase later.
+    assert stale.windows_incomplete is False
+    with pytest.raises(ValueError, match="Windows.*incomplete|Windows phase"):
+        stale.publish(tmp_path / "not-yet-read")
+    assert not (root / "pending.id").exists()
+
+
+def test_restart_rechecks_native_phase_after_prompt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from win_offline_update import windows_updates, winre_menu
+
+    identity = TargetIdentity(
+        "25H2", 26200, 9974, "x64", tmp_path / "Windows", OWNER, LOADER
+    )
+    menu = winre_menu.Menu(identity)
+    menu.root.mkdir(parents=True)
+    (menu.root / "installed.id").write_text(OWNER, encoding="ascii")
+    (menu.root / "pending.id").write_text(JOB, encoding="ascii")
+    state = {"incomplete": False}
+
+    def verify(*_: object) -> windows_updates.WindowsResult | None:
+        return (
+            windows_updates.WindowsResult(
+                False, True, (), menu.root / "windows-updates.json"
+            )
+            if state["incomplete"]
+            else None
+        )
+
+    def consent(_: str) -> str:
+        state["incomplete"] = True
+        return "yes"
+
+    monkeypatch.setattr(windows_updates, "verify", verify)
+    monkeypatch.setattr(winre_menu.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", consent)
+    monkeypatch.setattr(
+        winre_menu, "_run", lambda *_: pytest.fail("The stale restart must not run.")
+    )
+    with pytest.raises(ValueError, match="Windows.*incomplete|Windows phase"):
+        menu.offer_restart()
+
+
+def test_incomplete_native_phase_does_not_offer_existing_recovery_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from win_offline_update import windows_updates
+    from win_offline_update.winre_menu import Menu
+
+    identity = TargetIdentity(
+        "25H2", 26200, 9974, "x64", tmp_path / "Windows", OWNER, LOADER
+    )
+    menu = Menu(identity)
+    menu.root.mkdir(parents=True)
+    (menu.root / "installed.id").write_text(OWNER, encoding="ascii")
+    (menu.root / "pending.id").write_text(JOB, encoding="ascii")
+    monkeypatch.setattr(
+        windows_updates,
+        "verify",
+        lambda *_: windows_updates.WindowsResult(
+            False, False, (), menu.root / "windows-updates.json"
+        ),
+    )
+    monkeypatch.setattr(
+        menu,
+        "offer_restart",
+        lambda: pytest.fail("Resolve the native phase before a recovery restart."),
+    )
+    assert menu.resume() is False
+    assert menu.windows_incomplete
+
+
+def test_pending_native_hooks_remain_visible_after_future_selection_is_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from win_offline_update import windows_hooks, windows_updates
+    from win_offline_update.hook_selection import resolve_selection
+    from win_offline_update.winre_menu import Menu
+
+    identity = TargetIdentity(
+        "25H2", 26200, 9974, "x64", tmp_path / "Windows", OWNER, LOADER
+    )
+    menu = Menu(identity)
+    menu.root.mkdir(parents=True)
+    (menu.root / "installed.id").write_text(OWNER, encoding="ascii")
+    (menu.root / "selection.json").write_text('{"profile": null}', encoding="ascii")
+    selected = resolve_selection(("official/usb4",), None, tmp_path / "selected")
+    monkeypatch.setattr(windows_hooks, "_backup", lambda *_: None)
+    monkeypatch.setattr(windows_hooks, "apply", lambda *_: None)
+    job_id = "55555555-5555-5555-5555-555555555555"
+    with windows_hooks.capture(
+        selected.path, menu.root, OWNER, identity.windows, job_id=job_id
+    ):
+        pass
+    (menu.root / windows_updates.JOURNAL).write_text(
+        json.dumps({"hooks_job_id": job_id, "phase_complete": False}), encoding="ascii"
+    )
+    menu.describe_hooks()
+    output = capsys.readouterr().out
+    assert "Saved hooks for future jobs" in output and "Hooks: none." in output
+    assert "Pending Windows phase uses these captured hooks" in output
+    assert "official/usb4" in output and "UASPStor" in output
+
+
+def test_unfinished_native_phase_rejects_new_hook_flags_before_rescan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from win_offline_update import windows_updates
+    from win_offline_update.winre_menu import Menu
+
+    identity = TargetIdentity(
+        "25H2", 26200, 9974, "x64", tmp_path / "Windows", OWNER, LOADER
+    )
+    menu = Menu(identity)
+    menu.root.mkdir(parents=True)
+    (menu.root / "installed.id").write_text(OWNER, encoding="ascii")
+    monkeypatch.setattr(
+        windows_updates,
+        "verify",
+        lambda *_: windows_updates.WindowsResult(
+            False, False, (), menu.root / windows_updates.JOURNAL
+        ),
+    )
+    with pytest.raises(ValueError, match="captured hooks"):
+        menu.resume(allow_restart=False)

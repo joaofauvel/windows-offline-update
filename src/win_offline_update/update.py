@@ -486,6 +486,7 @@ class PreparedUpdates:
     drivers: list[Path] = field(default_factory=list)
     monthly: list[Path] = field(default_factory=list)
     manual: list[ManualUpdate] = field(default_factory=list)
+    security: list[Offer] = field(default_factory=list)
 
 
 async def _export_driver(
@@ -519,6 +520,15 @@ async def _process_offer(
     prepared: PreparedUpdates | None,
 ) -> bool:
     print(f"\n[{offer.category}] {offer.title} ({offer.id})", flush=True)
+    if prepared is not None:
+        from .windows_updates import eligible
+
+        if eligible(offer):
+            prepared.security.append(offer)
+            print(
+                "  Install in Windows through this exact Windows Update Agent revision."
+            )
+            return True
     if offer.category == "drivers" and offer.hardware_id:
         print(f"  Windows Update Agent hardware ID: {offer.hardware_id}")
     tried_driver_cache = False
@@ -690,6 +700,10 @@ async def run_update(
         f"\n{len(selected)} offer(s) checked, {failures} lookup or download failure(s)."
     )
     if prepared is not None:
+        if prepared.security:
+            print(
+                f"Ready for Windows installation: {len(prepared.security)} security update(s)."
+            )
         print(
             f"Ready for recovery: {len(prepared.drivers)} driver export(s), {len(prepared.monthly)} Windows package job(s)."
         )

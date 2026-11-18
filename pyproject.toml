@@ -1,7 +1,7 @@
 [project]
 name = "wuo"
-version = "0.3.0"
-description = "Find Windows updates and prepare them for offline servicing"
+version = "0.3.1"
+description = "Find Windows updates and install them through Windows and offline servicing"
 readme = "README.md"
 requires-python = ">=3.15"
 license = "GPL-3.0-or-later"

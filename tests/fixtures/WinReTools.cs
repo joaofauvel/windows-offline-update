@@ -20,6 +20,15 @@ class WinReTools
         }
         if (tool == "dism")
         {
+            if (Array.IndexOf(args, "/Get-PackageInfo") >= 0)
+            {
+                foreach (string argument in args)
+                    if (argument.StartsWith("/PackageName:"))
+                        Console.WriteLine("Package Identity : " + argument.Substring(13));
+                Console.WriteLine("State : " +
+                    (Environment.GetEnvironmentVariable("WOU_TEST_PACKAGE_STATE") ?? "Installed"));
+                return 0;
+            }
             if (Array.IndexOf(args, "/Get-Packages") >= 0)
             {
                 Console.WriteLine("Package Identity | State");
@@ -27,17 +36,25 @@ class WinReTools
                     Console.WriteLine("Package_for_Test | Install Pending");
                 return 0;
             }
+            string changed = Environment.GetEnvironmentVariable("WOU_TEST_DISM_HOOK_VALUE");
+            if (changed != null) File.WriteAllText(state, changed);
             return int.Parse(Environment.GetEnvironmentVariable("WOU_TEST_DISM_STATUS") ?? "3010");
         }
         if (args[0] == "load" || args[0] == "unload") return 0;
         if (args[0] == "save")
         {
+            if (Environment.GetEnvironmentVariable("WOU_TEST_SAVE_ERROR") == "1") return 1;
             File.WriteAllText(args[2], "stub backup");
             return 0;
         }
         if (args[0] == "add")
         {
-            File.WriteAllText(state, args[Array.IndexOf(args, "/d") + 1]);
+            string value = args[Array.IndexOf(args, "/d") + 1];
+            if (value == "0x0" && Environment.GetEnvironmentVariable("WOU_TEST_POST_ERROR") == "1")
+                return 1;
+            File.WriteAllText(state, value);
+            if (value == "0x2" && Environment.GetEnvironmentVariable("WOU_TEST_PRE_ERROR") == "1")
+                return 1;
             return 0;
         }
         switch (args[args.Length - 1])
@@ -46,10 +63,12 @@ class WinReTools
                 Console.WriteLine("    MachineGuid    REG_SZ    33333333-3333-3333-3333-333333333333");
                 break;
             case "CurrentBuildNumber":
-                Console.WriteLine("    CurrentBuildNumber    REG_SZ    26200");
+                Console.WriteLine("    CurrentBuildNumber    REG_SZ    " +
+                    (Environment.GetEnvironmentVariable("WOU_TEST_BUILD") ?? "26200"));
                 break;
             case "UBR":
-                Console.WriteLine("    UBR    REG_DWORD    0x24f1");
+                Console.WriteLine("    UBR    REG_DWORD    " +
+                    (Environment.GetEnvironmentVariable("WOU_TEST_REVISION") ?? "0x24f1"));
                 break;
             case "Default":
                 Console.WriteLine("    Default    REG_DWORD    0x1");

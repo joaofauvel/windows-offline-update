@@ -65,6 +65,8 @@ def render_runner(plan: BundlePlan) -> str:
     else:
         allowed = " ".join(f'if /i not "%%~nxF"=="{name}"' for name in expected)
         packages.append(rf'for %%F in ("%BUNDLE%packages\*") do {allowed} exit /b 1')
+        if plan.kind == "packages":
+            packages.append(r'for /d %%D in ("%BUNDLE%packages\*") do exit /b 1')
     stages: list[str] = []
     for relative in plan.commands:
         if relative not in plan.size:
@@ -73,10 +75,34 @@ def render_runner(plan: BundlePlan) -> str:
             relative.startswith("packages/") and relative.lower().endswith(".inf")
         ):
             raise ValueError("Driver servicing requires a verified INF.")
+        if plan.kind == "packages" and not (
+            relative.startswith("packages/")
+            and len(relative.split("/")) == 2
+            and relative.lower().endswith((".msu", ".cab"))
+        ):
+            raise ValueError("CBS servicing requires a verified MSU/CAB package.")
         filename = relative.replace("/", "\\")
         stages.extend(
             (rf'set "PACKAGE=%BUNDLE%{filename}"', "call :dism_add || exit /b 1")
         )
+    state_checks: list[str] = []
+    if plan.kind == "packages":
+        from .bundle import _canonical_identity
+
+        if not plan.package_identities or len(set(plan.package_identities)) != len(
+            plan.package_identities
+        ):
+            raise ValueError("CBS servicing requires a canonical package inventory.")
+        for index, identity in enumerate(plan.package_identities, 1):
+            _canonical_identity(identity, plan.target.architecture)
+            state_checks.extend(
+                (
+                    f'set "CBS_EXPECTED={identity}"',
+                    rf'set "CBS_FILE=%JOB%\packages-after-{index:04}.txt"',
+                    "call :verify_cbs_package || exit /b 1",
+                )
+            )
+    state_checks.append("exit /b 0")
     template = (
         files("win_offline_update")
         .joinpath("recovery.cmd.in")
@@ -88,9 +114,9 @@ def render_runner(plan: BundlePlan) -> str:
         "LOADER": "{" + str(UUID(plan.target.loader_guid)) + "}",
         "BUILD": str(plan.target.build),
         "BEFORE": hex(plan.target.revision),
-        "AFTER": hex(plan.target_revision),
         "PACKAGES": "\n".join(packages),
         "STAGES": "\n".join(stages),
+        "PACKAGE_STATES": "\n".join(state_checks),
         "DISM_ADD": '/Add-Driver /Driver:"%PACKAGE%"'
         if plan.kind == "drivers"
         else '/Add-Package /PackagePath:"%PACKAGE%"',
