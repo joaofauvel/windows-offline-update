@@ -14,6 +14,7 @@ import httpx
 from . import bundle, catalog, downloads, feeds, target
 from .models import Update
 from .target import TargetIdentity
+lazy from . import driver_cache
 
 _UPGRADES = "3689bdc8-b205-4af4-8d4a-a63924c5e9d5"
 _ARCH = re.compile(
@@ -78,6 +79,7 @@ $updates = @(
         }
         @{
             id = [string]$update.Identity.UpdateID
+            revision = [int]$update.Identity.RevisionNumber
             title = [string]$update.Title
             type = [int]$update.Type
             hardware = $hardwareId
@@ -114,6 +116,7 @@ class Offer:
     hardware_id: str = ""
     hardware_verified: bool = False
     payload_names: tuple[str, ...] = ()
+    revision: int | None = None
 
 
 def _builds(title: str) -> set[tuple[int, int]]:
@@ -167,6 +170,7 @@ def parse_offers(raw: str) -> tuple[list[Offer], str | None]:
         categories = {value.casefold() for value in _strings(item.get("categories"))}
         hardware_id = item.get("hardware")
         hardware_id = hardware_id if isinstance(hardware_id, str) else ""
+        revision = item.get("revision")
         offers[update_id] = Offer(
             update_id,
             title,
@@ -177,6 +181,9 @@ def parse_offers(raw: str) -> tuple[list[Offer], str | None]:
                 urlsplit(url).path.rsplit("/", 1)[-1]
                 for url in _strings(item.get("payloads"))
             ),
+            revision
+            if isinstance(revision, int) and not isinstance(revision, bool)
+            else None,
         )
     return list(offers.values()), issue
 
@@ -418,6 +425,53 @@ async def _defender_package(
     )
 
 
+async def _show_driver_candidates(
+    client: httpx.AsyncClient, offer: Offer, identity: TargetIdentity
+) -> None:
+    if _PACKAGE_VERSION.search(offer.title) is None:
+        return
+    try:
+        candidates = await catalog.search(client, offer.hardware_id)
+    except (ValueError, httpx.HTTPError) as error:
+        print(f"  Could not search the Catalog for alternatives: {error}")
+        return
+    seen = set()
+    for candidate in candidates:
+        if (
+            candidate.id == offer.id
+            or candidate.title.casefold() != offer.title.casefold()
+            or not candidate.classification.casefold().startswith("drivers")
+            or not _DRIVER_RELEASE.search(candidate.product)
+        ):
+            continue
+        try:
+            details = await catalog.show(client, candidate.id)
+            if not _DRIVER_RELEASE.search(details.product):
+                continue
+            alternative = validate_applicability(
+                replace(offer, id=candidate.id), details, identity
+            )
+        except ValueError, httpx.HTTPError:
+            continue
+        if not all(
+            file.sha256 and file.name.casefold().endswith(".cab")
+            for file in alternative.files
+        ):
+            continue
+        digests = frozenset(file.sha256 for file in alternative.files)
+        if digests not in seen:
+            print(
+                f"  Catalog candidate for review: {alternative.id} ({identity.architecture})."
+            )
+            if alternative.details_url:
+                print(f"    {alternative.details_url}")
+            seen.add(digests)
+    if seen:
+        print(
+            "  Download a reviewed candidate with wuo download <Catalog ID> --output <directory>."
+        )
+
+
 async def _process_offer(
     client: httpx.AsyncClient,
     identity: TargetIdentity,
@@ -425,14 +479,37 @@ async def _process_offer(
     offer: Offer,
     *,
     dry_run: bool,
+    driver_cache_fallback: bool,
     profile: Path | None,
     extractor: str,
 ) -> bool:
     print(f"\n[{offer.category}] {offer.title} ({offer.id})", flush=True)
     if offer.category == "drivers" and offer.hardware_id:
         print(f"  Windows Update Agent hardware ID: {offer.hardware_id}")
+    tried_driver_cache = False
     try:
-        selected = await _package(client, offer, identity)
+        try:
+            selected = await _package(client, offer, identity)
+        except catalog.SourceError:
+            if not driver_cache_fallback or offer.category != "drivers":
+                raise
+            revision = driver_cache.check_offer(offer)
+            if dry_run:
+                print(
+                    f"  Would request driver revision {revision} through Windows Update Agent and verify the exported INF."
+                )
+            else:
+                print(
+                    f"  Requesting driver revision {revision} through Windows Update Agent…",
+                    flush=True,
+                )
+                tried_driver_cache = True
+                location = await driver_cache.export_driver(offer, identity, output)
+                print(f"  Verified driver export in {location}")
+                print(
+                    "  Manual servicing: use the matching INF listed in manifest.json."
+                )
+            return True
         if selected.id != offer.id:
             print(f"  Matched {selected.kb} to standalone Catalog entry {selected.id}")
         elif selected.source != "Microsoft Update Catalog":
@@ -499,6 +576,8 @@ async def _process_offer(
     except (OSError, ValueError, httpx.HTTPError) as error:
         print(f"  Needs review: {error}")
         if offer.category == "drivers" and offer.hardware_verified:
+            if tried_driver_cache:
+                await _show_driver_candidates(client, offer, identity)
             print(
                 f"  Check the PC or device manufacturer's signed package for Windows "
                 f"{identity.release} {identity.architecture} and the hardware ID above."
@@ -517,6 +596,7 @@ async def run_update(
     *,
     only: tuple[str, ...] = (),
     dry_run: bool = False,
+    driver_cache_fallback: bool = False,
     profile: Path | None = None,
     extractor: str = "7z.exe",
 ) -> int:
@@ -543,6 +623,7 @@ async def run_update(
             output,
             offer,
             dry_run=dry_run,
+            driver_cache_fallback=driver_cache_fallback,
             profile=profile,
             extractor=extractor,
         )

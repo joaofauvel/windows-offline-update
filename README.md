@@ -43,6 +43,15 @@ that need full Windows Setup media use Microsoft's download page.
 
 ## Stage a driver offline
 
+In an elevated Windows terminal, use `uvx wuo update --only drivers --driver-cache`
+to try Windows Update Agent's download cache for drivers whose exact offer has
+no public Catalog package. Add `--dry-run` to preview the route. The export
+checks the offered revision, present hardware, and the INF's architecture,
+version, and signature. The `manifest.json` in the export directory lists the
+matching INF under `payload/`. Use the export with the same PC and Windows
+installation. An export failure can list same-version Catalog candidates for
+review, with identical packages shown once.
+
 If the offered driver has no standalone package, use the reported hardware ID
 and driver version to look up a signed Windows driver from the PC or device
 manufacturer. Extract the driver and keep its INF, catalog, and supporting
@@ -96,6 +105,23 @@ uv run --locked win-offline-update verify --bundle C:\WinRE-Bundle
 
 Add `--profile examples/usb4.toml` to opt into the example registry hooks.
 Use a disposable lab profile for a normal VM when testing hook behavior.
+
+With `uvx`, save the [USB4 example](https://github.com/joaofauvel/windows-offline-update/blob/main/examples/usb4.toml)
+as `usb4.toml`, or pass the path to an existing profile.
+
+```powershell
+uvx wuo update --only monthly --profile .\usb4.toml
+```
+
+For example, `key = 'Services\UASPStor'`, `name = 'Start'`, and `value = 0`
+sets a DWORD in the default control set for the next boot. From WinRE,
+the bundle runner loads `W:\Windows\System32\Config\SYSTEM` with `reg load`,
+backs up the mounted hive, and reads its `Select\Default` value. If that value
+is `1`, the relative key resolves to `ControlSet001\Services\UASPStor` in the
+mounted hive. The runner unloads the hive after the configured pre- or
+post-servicing edits. The example's five hooks use the `post` phase.
+Set `scope = "system"` for a key relative to the root of the SYSTEM hive.
+Profiles support `pre` and `post` edits to existing DWORD values.
 
 Enter stock WinRE. Identify the prepared Windows volume and its EFI system
 partition in DiskPart. Assign an unused letter to the verified EFI partition

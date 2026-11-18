@@ -53,6 +53,7 @@ async def _run(args: argparse.Namespace) -> int:
                 args.output or Path.home() / "Downloads/WindowsOfflineUpdates",
                 only=tuple(args.only),
                 dry_run=args.dry_run,
+                driver_cache_fallback=args.driver_cache,
                 profile=args.profile,
                 extractor=args.extractor,
             )
@@ -152,6 +153,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--dry-run",
         action="store_true",
         help="Resolve offers without downloading packages or writing a bundle.",
+    )
+    workflow.add_argument(
+        "--driver-cache",
+        action="store_true",
+        help="Try exporting unavailable Catalog drivers through Windows Update Agent's download cache.",
     )
     workflow.add_argument(
         "--output",

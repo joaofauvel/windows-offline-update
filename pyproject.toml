@@ -1,6 +1,6 @@
 [project]
 name = "wuo"
-version = "0.1.1"
+version = "0.1.2"
 description = "Find Windows updates and prepare them for offline servicing"
 readme = "README.md"
 requires-python = ">=3.15"
