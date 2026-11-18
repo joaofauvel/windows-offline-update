@@ -6,7 +6,7 @@ import pytest
 def test_profile_accepts_five_opt_in_service_values() -> None:
     from win_offline_update.hooks import load_profile
 
-    profile = load_profile(Path(__file__).parents[1] / "examples" / "usb4.toml")
+    profile = load_profile(Path(__file__).parents[1] / "hooks" / "usb4.toml")
     assert [(hook.phase, hook.key, hook.name, hook.value) for hook in profile] == [
         ("post", r"Services\UASPStor", "Start", 0),
         ("post", r"Services\USBHUB3", "Start", 0),

@@ -27,7 +27,7 @@ Repository = "https://github.com/joaofauvel/windows-offline-update"
 packages = ["src/win_offline_update"]
 
 [tool.hatch.build.targets.sdist]
-include = ["/LICENSE", "/README.md", "/examples/usb4.toml", "/pyproject.toml", "/src/win_offline_update"]
+include = ["/LICENSE", "/README.md", "/hooks/usb4.toml", "/pyproject.toml", "/src/win_offline_update"]
 
 [dependency-groups]
 dev = ["mypy>=1.19", "pytest>=9", "ruff>=0.15"]

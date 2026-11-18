@@ -19,13 +19,15 @@ use `uv run --locked wuo`.
 Setup backs up the installed recovery image and adds **Windows Offline Update**
 to a copy of it. Setup restores the original image and registration if it fails.
 
-Pass a registry hook profile to setup to reuse it for every recovery job. Use
-the example if your Windows installation needs its USB4 and storage service
-settings to boot. Save the example as `usb4.toml` before running setup. [USB4 profile](examples/usb4.toml)
+Save the USB4 profile as `usb4.toml` if your Windows installation needs those
+USB4 and storage service settings to boot. Setup saves a copy for later updates. [USB4 profile](hooks/usb4.toml)
 
 ```powershell
 wuo setup --profile .\usb4.toml
 ```
+
+From the checkout, the profile is at `.\hooks\usb4.toml`. Use
+`wuo update --profile <path>` to choose a different profile for one run.
 
 ## Install updates
 
