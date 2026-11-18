@@ -1,0 +1,247 @@
+@echo off
+setlocal EnableExtensions DisableDelayedExpansion
+if /i not "%SystemRoot%"=="X:\Windows" exit /b 1
+set "SYS=%SystemRoot%\System32"
+set "WINDOWS_ID=@@WINDOWS_VOLUME@@"
+set "EFI_ID=@@EFI_VOLUME@@"
+set "MACHINE=@@MACHINE_GUID@@"
+set "WORK=%SYS%\..\Temp\WUO-%RANDOM%-%RANDOM%"
+set "TEMP_TARGET="
+set "TEMP_EFI="
+set "APPLIED="
+if /i "%WINDOWS_ID%"=="%EFI_ID%" goto wrong_target
+mkdir "%WORK%" 2>nul || goto no_scratch
+
+call :resolve %WINDOWS_ID%
+if errorlevel 1 (set "TEMP_TARGET=%TEMP_MOUNT%" & goto no_windows)
+set "TEMP_TARGET=%TEMP_MOUNT%"
+set "TARGET=%LETTER%:"
+call :resolve %EFI_ID%
+if errorlevel 1 (set "TEMP_EFI=%TEMP_MOUNT%" & goto no_efi)
+set "TEMP_EFI=%TEMP_MOUNT%"
+set "EFI=%LETTER%:"
+if /i "%TARGET%"=="%EFI%" goto wrong_target
+
+set "ROOT=%TARGET%\ProgramData\WinOfflineUpdate"
+set "MENU=%ROOT%\menu"
+call :plain "%TARGET%\ProgramData" || goto wrong_target
+call :plain "%ROOT%" || goto wrong_target
+call :plain "%MENU%" || goto wrong_target
+call :match_marker "%MENU%\installed.id" %MACHINE% || goto wrong_target
+if not exist "%MENU%\pending.id" goto no_job
+call :read_pending || goto bad_job
+
+set "JOB=%ROOT%\jobs\%JOB_ID%"
+set "BUNDLE=%MENU%\bundles\%JOB_ID%"
+set "HASHES=%BUNDLE%\hashes.txt"
+call :plain "%ROOT%\jobs" || goto bad_job
+call :plain "%JOB%" || goto bad_job
+call :match_marker "%JOB%\target.id" %JOB_ID% || goto bad_job
+if exist "%JOB%\apply.started" goto started
+if exist "%JOB%\state.ready" goto started
+call :plain "%MENU%\bundles" || goto bad_bundle
+call :plain "%BUNDLE%" || goto bad_bundle
+call :plain "%HASHES%" || goto bad_bundle
+call :verify_bundle || goto bad_bundle
+call "%BUNDLE%\recovery.cmd" check %TARGET% %EFI% || goto failed_check
+call "%BUNDLE%\recovery.cmd" apply %TARGET% %EFI% || goto failed_apply
+call :match_marker "%JOB%\state.ready" %JOB_ID% || goto failed_apply
+set "APPLIED=1"
+goto cleanup
+
+:resolve
+rem Reuse exactly one matching letter before attempting to attach a new one.
+set "WANTED=%~1"
+set "LETTER="
+set "TEMP_MOUNT="
+set "LETTERS=Z Y W V U T S R Q P O N M L K J I H G F E D C B A"
+for %%D in (%LETTERS%) do call :find_match %%D || exit /b 1
+if defined LETTER exit /b 0
+for %%D in (%LETTERS%) do if not defined TEMP_MOUNT call :try_mount %%D
+if not defined TEMP_MOUNT exit /b 1
+call :read_mount %TEMP_MOUNT% || exit /b 1
+if /i not "%CURRENT%"=="%WANTED%" exit /b 1
+set "LETTER=%TEMP_MOUNT%"
+exit /b 0
+
+:find_match
+call :read_mount %~1 || exit /b 0
+if /i not "%CURRENT%"=="%WANTED%" exit /b 0
+if defined LETTER exit /b 1
+set "LETTER=%~1"
+exit /b 0
+
+:try_mount
+call :read_mount %~1 && exit /b 1
+if exist %~1:\ exit /b 1
+rem Mount Manager also refuses to take letters already assigned to a volume.
+"%SYS%\mountvol.exe" %~1:\ %WANTED% >nul 2>&1 || exit /b 1
+set "TEMP_MOUNT=%~1"
+exit /b 0
+
+:read_mount
+set "CURRENT="
+"%SYS%\mountvol.exe" %~1:\ /L >"%WORK%\volume.txt" 2>nul || exit /b 1
+for /f "usebackq tokens=1" %%G in ("%WORK%\volume.txt") do set "CURRENT=%%G"
+exit /b 0
+
+:unmount
+if "%~2"=="" exit /b 0
+call :read_mount %~2 || exit /b 1
+if /i not "%CURRENT%"=="%~1" exit /b 1
+"%SYS%\mountvol.exe" %~2:\ /D >nul 2>&1
+exit /b
+
+:plain
+rem Require a filesystem entry that is neither a junction nor a symbolic link.
+for %%F in ("%~1") do set "ATTR=%%~aF"
+if not defined ATTR exit /b 1
+if not "%ATTR:l=%"=="%ATTR%" exit /b 1
+exit /b 0
+
+:match_marker
+>"%WORK%\marker.expected.txt" echo(%~2
+call :match_marker_bytes "%~1"
+exit /b
+
+:match_marker_bytes
+call :plain "%~1" || exit /b 1
+if not "%ATTR:d=%"=="%ATTR%" exit /b 1
+if %~z1 GTR 66 exit /b 1
+rem Compare bytes so an LF or CRLF is accepted and any trailing data is refused.
+"%~dp0certutil.exe" -f -encodehex "%~1" "%WORK%\marker.actual.hex.txt" 12 >nul 2>&1 || exit /b 1
+"%~dp0certutil.exe" -f -encodehex "%WORK%\marker.expected.txt" "%WORK%\marker.expected.hex.txt" 12 >nul 2>&1 || exit /b 1
+set "ACTUAL="
+set "EXPECTED="
+set /p "ACTUAL="<"%WORK%\marker.actual.hex.txt" || exit /b 1
+set /p "EXPECTED="<"%WORK%\marker.expected.hex.txt" || exit /b 1
+if /i "%ACTUAL%"=="%EXPECTED%" exit /b 0
+if /i "%ACTUAL%"=="%EXPECTED:~0,-4%0a" exit /b 0
+exit /b 1
+
+:read_pending
+set "PENDING=%MENU%\pending.id"
+call :plain "%PENDING%" || exit /b 1
+if not "%ATTR:d=%"=="%ATTR%" exit /b 1
+for %%F in ("%PENDING%") do if not "%%~zF"=="37" if not "%%~zF"=="38" exit /b 1
+set "JOB_ID="
+for /f "usebackq delims=" %%J in ("%PENDING%") do set "JOB_ID=%%J"
+setlocal EnableDelayedExpansion
+if not "!JOB_ID:~8,1!!JOB_ID:~13,1!!JOB_ID:~18,1!!JOB_ID:~23,1!"=="----" exit /b 1
+if "!JOB_ID:~35,1!"=="" exit /b 1
+if not "!JOB_ID:~36,1!"=="" exit /b 1
+set "UUID=[0-9a-f][0-9a-f]*-[0-9a-f][0-9a-f]*-[0-9a-f][0-9a-f]*-[0-9a-f][0-9a-f]*-[0-9a-f][0-9a-f]*"
+>"%WORK%\marker.expected.txt" echo(!JOB_ID!
+"%~dp0findstr.exe" /R /X /C:"%UUID%" "%WORK%\marker.expected.txt" >nul || exit /b 1
+call :match_marker_bytes "%PENDING%" || exit /b 1
+endlocal
+exit /b 0
+
+:verify_bundle
+rem Parse only the WinRE copy after validating it against the servicing job.
+set "INVENTORY=%WORK%\inventory.txt"
+copy /b "%HASHES%" "%INVENTORY%" >nul 2>&1 || exit /b 1
+"%~dp0certutil.exe" -hashfile "%INVENTORY%" SHA256 >"%WORK%\digest.txt" 2>nul || exit /b 1
+"%~dp0findstr.exe" /R /X /C:"[0-9a-f][0-9a-f]*" "%WORK%\digest.txt" >"%WORK%\marker.expected.txt" || exit /b 1
+for %%F in ("%WORK%\marker.expected.txt") do if not "%%~zF"=="66" exit /b 1
+call :match_marker_bytes "%JOB%\hashes.sha256" || exit /b 1
+
+rem Enumerate real files so a missing hash entry cannot silently skip a payload.
+dir /a:l /b /s "%BUNDLE%\*" >"%WORK%\links.txt" 2>nul
+for %%F in ("%WORK%\links.txt") do if not "%%~zF"=="0" exit /b 1
+dir /a:-d /b /s "%BUNDLE%\*" >"%WORK%\all.txt" 2>nul || exit /b 1
+type nul >"%WORK%\files.txt" || exit /b 1
+type nul >"%WORK%\verified.txt" || exit /b 1
+for /f "usebackq delims=" %%F in ("%WORK%\all.txt") do (
+    set "FILE=%%F"
+    call :list_file || exit /b 1
+)
+
+set "ENTRY=[0-9a-f][0-9a-f]* [A-Za-z0-9][A-Za-z0-9._+~ /-]*"
+"%~dp0findstr.exe" /R /V /X /C:"%ENTRY%" "%INVENTORY%" >nul
+if not errorlevel 1 exit /b 1
+if errorlevel 2 exit /b 1
+for /f "usebackq delims=" %%H in ("%INVENTORY%") do (
+    set "ENTRY=%%H"
+    call :verify_file || exit /b 1
+)
+"%~dp0findstr.exe" /L /I /X /C:"recovery.cmd" "%WORK%\verified.txt" >nul || exit /b 1
+"%~dp0findstr.exe" /L /I /X /C:"plan.json" "%WORK%\verified.txt" >nul || exit /b 1
+"%~dp0findstr.exe" /L /I /V /X /G:"%WORK%\verified.txt" "%WORK%\files.txt" >nul
+if not errorlevel 1 exit /b 1
+if errorlevel 2 exit /b 1
+exit /b 0
+
+:list_file
+setlocal EnableDelayedExpansion
+set "REL=!FILE:%BUNDLE%\=!"
+if /i "!REL!"=="hashes.txt" exit /b 0
+set "REL=!REL:\=/!"
+>>"%WORK%\files.txt" echo(!REL!|| exit /b 1
+exit /b 0
+
+:verify_file
+setlocal EnableDelayedExpansion
+if not "!ENTRY:~64,1!"==" " exit /b 1
+set "DIGEST=!ENTRY:~0,64!"
+set "REL=!ENTRY:~65!"
+rem Match exact paths returned by dir before using them, including each segment.
+"%~dp0findstr.exe" /L /I /X /C:"!REL!" "%WORK%\files.txt" >nul || exit /b 1
+"%~dp0findstr.exe" /L /I /X /C:"!REL!" "%WORK%\verified.txt" >nul
+if not errorlevel 1 exit /b 1
+if errorlevel 2 exit /b 1
+"%~dp0certutil.exe" -hashfile "%BUNDLE%\!REL:/=\!" SHA256 >"%WORK%\digest.txt" 2>nul || exit /b 1
+"%~dp0findstr.exe" /L /I /X /C:"!DIGEST!" "%WORK%\digest.txt" >nul || exit /b 1
+if /i "!REL!"=="plan.json" call :match_marker "%JOB%\plan.sha256" !DIGEST! || exit /b 1
+>>"%WORK%\verified.txt" echo(!REL!|| exit /b 1
+exit /b 0
+
+:no_windows
+echo Cannot locate or mount the configured Windows volume. It may need to be unlocked.
+goto cleanup
+:no_efi
+echo Cannot locate or mount the configured EFI volume.
+goto cleanup
+:wrong_target
+echo The Windows Offline Update installation marker does not match this launcher.
+goto cleanup
+:no_job
+echo There is no offline update staged for this installation.
+goto cleanup
+:bad_job
+echo The pending offline update does not match a prepared servicing job.
+goto cleanup
+:started
+echo This offline update has already started. Review "%JOB%\recovery.log".
+goto cleanup
+:bad_bundle
+echo The staged bundle could not be verified. Return to Windows to review the staged update.
+goto cleanup
+:failed_check
+echo The recovery check failed. Review the output before retrying this update.
+goto cleanup
+:failed_apply
+echo The recovery apply failed. Review "%JOB%\recovery.log" before continuing.
+
+:cleanup
+set "CLEANUP_FAILED="
+call :unmount %EFI_ID% "%TEMP_EFI%" || set "CLEANUP_FAILED=1"
+call :unmount %WINDOWS_ID% "%TEMP_TARGET%" || set "CLEANUP_FAILED=1"
+if not defined CLEANUP_FAILED goto remove_scratch
+echo A temporary volume mount could not be removed. Restart to return to Windows.
+set "APPLIED="
+:remove_scratch
+if exist "%WORK%\" (
+    del /q "%WORK%\*.txt" >nul 2>&1
+    rmdir "%WORK%" >nul 2>&1
+)
+if not defined APPLIED goto wait_exit
+"%SYS%\wpeutil.exe" Reboot && exit /b 0
+echo Offline staging succeeded. Restart from the recovery menu to finish the update.
+goto wait_exit
+
+:no_scratch
+echo Could not create a temporary verification directory in WinRE.
+:wait_exit
+pause
+exit /b 1

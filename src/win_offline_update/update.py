@@ -4,7 +4,7 @@ import asyncio
 import json
 import re
 import subprocess
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from urllib.parse import parse_qs, urljoin, urlsplit
 from uuid import UUID
@@ -472,6 +472,31 @@ async def _show_driver_candidates(
         )
 
 
+@dataclass
+class PreparedUpdates:
+    directory: Path
+    drivers: list[Path] = field(default_factory=list)
+    monthly: list[Path] = field(default_factory=list)
+
+
+async def _export_driver(
+    offer: Offer, identity: TargetIdentity, output: Path, dry_run: bool
+) -> Path | None:
+    revision = driver_cache.check_offer(offer)
+    if dry_run:
+        print(
+            f"  Would export driver revision {revision} through Windows Update Agent."
+        )
+        return None
+    print(
+        f"  Exporting driver revision {revision} through Windows Update Agent.",
+        flush=True,
+    )
+    location = await driver_cache.export_driver(offer, identity, output)
+    print(f"  Verified driver export in {location}")
+    return location
+
+
 async def _process_offer(
     client: httpx.AsyncClient,
     identity: TargetIdentity,
@@ -482,30 +507,41 @@ async def _process_offer(
     driver_cache_fallback: bool,
     profile: Path | None,
     extractor: str,
+    prepared: PreparedUpdates | None,
 ) -> bool:
     print(f"\n[{offer.category}] {offer.title} ({offer.id})", flush=True)
     if offer.category == "drivers" and offer.hardware_id:
         print(f"  Windows Update Agent hardware ID: {offer.hardware_id}")
     tried_driver_cache = False
     try:
+        if (
+            prepared is not None
+            and offer.category == "drivers"
+            and driver_cache_fallback
+        ):
+            tried_driver_cache = True
+            try:
+                location = await _export_driver(offer, identity, output, dry_run)
+            except (ValueError, OSError) as error:
+                print(
+                    f"  Could not stage a driver through Windows Update Agent: {error}"
+                )
+            else:
+                if location is not None:
+                    prepared.drivers.append(location)
+                return True
         try:
             selected = await _package(client, offer, identity)
         except catalog.SourceError:
-            if not driver_cache_fallback or offer.category != "drivers":
+            if (
+                tried_driver_cache
+                or not driver_cache_fallback
+                or offer.category != "drivers"
+            ):
                 raise
-            revision = driver_cache.check_offer(offer)
-            if dry_run:
-                print(
-                    f"  Would request driver revision {revision} through Windows Update Agent and verify the exported INF."
-                )
-            else:
-                print(
-                    f"  Requesting driver revision {revision} through Windows Update Agent…",
-                    flush=True,
-                )
-                tried_driver_cache = True
-                location = await driver_cache.export_driver(offer, identity, output)
-                print(f"  Verified driver export in {location}")
+            tried_driver_cache = not dry_run
+            location = await _export_driver(offer, identity, output, dry_run)
+            if location is not None:
                 print(
                     "  Manual servicing: use the matching INF listed in manifest.json."
                 )
@@ -542,7 +578,9 @@ async def _process_offer(
                 await downloads.download(client, selected, destination)
                 print(f"  Downloaded to {destination}")
             if automatic:
-                recovery = output / f"{selected.id}-recovery"
+                recovery = (
+                    output if prepared is None else prepared.directory
+                ) / f"{selected.id}-recovery"
                 if recovery.exists():
                     raise ValueError(
                         f"A bundle already exists at {recovery}. Review that job or move the bundle folder to prepare a fresh one."
@@ -561,13 +599,16 @@ async def _process_offer(
                     profile=profile,
                     extractor=extractor,
                 )
-                print(f"  Prepared recovery bundle in {recovery}")
-                print(
-                    "  In WinRE, locate this bundle and identify the Windows and EFI volume letters."
-                )
-                print(
-                    '  Run "<bundle path>\\recovery.cmd" check W: S:, then use apply with the same letters.'
-                )
+                if prepared is None:
+                    print(f"  Prepared recovery bundle in {recovery}")
+                    print(
+                        "  In WinRE, locate this bundle and identify the Windows and EFI volume letters."
+                    )
+                    print(
+                        '  Run "<bundle path>\\recovery.cmd" check W: S:, then use apply with the same letters.'
+                    )
+                else:
+                    prepared.monthly.append(recovery)
         if not automatic:
             print(f"  Manual servicing: {selected.route}")
             if selected.details_url:
@@ -599,6 +640,7 @@ async def run_update(
     driver_cache_fallback: bool = True,
     profile: Path | None = None,
     extractor: str = "7z.exe",
+    prepared: PreparedUpdates | None = None,
 ) -> int:
     print(
         f"Scanning Windows {identity.release} {identity.architecture} ({identity.build}.{identity.revision}) via Windows Update Agent…",
@@ -626,6 +668,7 @@ async def run_update(
             driver_cache_fallback=driver_cache_fallback,
             profile=profile,
             extractor=extractor,
+            prepared=prepared,
         )
         failures += not completed
     print(f"\n{len(selected)} offer(s) checked, {failures} requiring review.")
