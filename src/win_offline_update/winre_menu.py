@@ -189,8 +189,11 @@ class Menu:
             raise ValueError(
                 f"The servicing marker does not match. See {state / 'recovery.log'}."
             )
-        bundle.verify(self.root / "bundles" / job_id, post_boot=True)
-        print(f"Update verified. Log: {state / 'recovery.log'}")
+        prepared = self.root / "bundles" / job_id
+        bundle.verify(prepared, post_boot=True)
+        plan = json.loads((prepared / "plan.json").read_text(encoding="utf-8"))
+        kind = "Driver" if plan.get("kind") == "drivers" else "Windows package"
+        print(f"{kind} recovery job verified. Log: {state / 'recovery.log'}")
         return True
 
     def status(self) -> None:

@@ -473,10 +473,19 @@ async def _show_driver_candidates(
 
 
 @dataclass
+class ManualUpdate:
+    category: str
+    title: str
+    directory: Path
+    route: str
+
+
+@dataclass
 class PreparedUpdates:
     directory: Path
     drivers: list[Path] = field(default_factory=list)
     monthly: list[Path] = field(default_factory=list)
+    manual: list[ManualUpdate] = field(default_factory=list)
 
 
 async def _export_driver(
@@ -611,6 +620,12 @@ async def _process_offer(
                     prepared.monthly.append(recovery)
         if not automatic:
             print(f"  Manual servicing: {selected.route}")
+            if not dry_run and prepared is not None:
+                prepared.manual.append(
+                    ManualUpdate(
+                        offer.category, selected.title, destination, selected.route
+                    )
+                )
             if selected.details_url:
                 print(f"  Microsoft details: {selected.details_url}")
         return True
@@ -671,5 +686,17 @@ async def run_update(
             prepared=prepared,
         )
         failures += not completed
-    print(f"\n{len(selected)} offer(s) checked, {failures} requiring review.")
+    print(
+        f"\n{len(selected)} offer(s) checked, {failures} lookup or download failure(s)."
+    )
+    if prepared is not None:
+        print(
+            f"Ready for recovery: {len(prepared.drivers)} driver export(s), {len(prepared.monthly)} Windows package job(s)."
+        )
+        if prepared.manual:
+            print("Downloaded only; each update below requires installation:")
+            for item in prepared.manual:
+                print(f"  [{item.category}] {item.title}")
+                print(f"    Files: {item.directory}")
+                print(f"    {item.route}")
     return int(bool(failures or issue))
