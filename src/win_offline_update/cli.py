@@ -101,6 +101,9 @@ async def _stage_update(
     with tempfile.TemporaryDirectory(dir=menu.root, prefix="scan-") as temporary:
         prepared = PreparedUpdates(Path(temporary))
         result = await scan(prepared)
+        if prepared.manual:
+            print(f"{len(prepared.manual)} update(s) still require installation.")
+            result = 1
         if not prepared.drivers and not prepared.monthly:
             print("No update was staged for WinRE.")
             return result
