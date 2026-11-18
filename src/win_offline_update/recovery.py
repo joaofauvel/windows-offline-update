@@ -52,14 +52,27 @@ def render_runner(plan: BundlePlan) -> str:
             )
         )
     expected = [
-        path.split("/")[1] for path in plan.size if path.startswith("packages/")
+        path.split("/", 1)[1] for path in plan.size if path.startswith("packages/")
     ]
-    allowed = " ".join(f'if /i not "%%~nxF"=="{name}"' for name in expected)
-    packages.append(rf'for %%F in ("%BUNDLE%packages\*") do {allowed} exit /b 1')
+    if plan.kind == "drivers":
+        packages.extend(
+            (
+                'set "PACKAGE_COUNT=0"',
+                r'for /r "%BUNDLE%packages" %%F in (*) do set /a PACKAGE_COUNT+=1 >nul',
+                f'if not "%PACKAGE_COUNT%"=="{len(expected)}" exit /b 1',
+            )
+        )
+    else:
+        allowed = " ".join(f'if /i not "%%~nxF"=="{name}"' for name in expected)
+        packages.append(rf'for %%F in ("%BUNDLE%packages\*") do {allowed} exit /b 1')
     stages: list[str] = []
     for relative in plan.commands:
         if relative not in plan.size:
             raise ValueError("Servicing command has no verified package.")
+        if plan.kind == "drivers" and not (
+            relative.startswith("packages/") and relative.lower().endswith(".inf")
+        ):
+            raise ValueError("Driver servicing requires a verified INF.")
         filename = relative.replace("/", "\\")
         stages.extend(
             (rf'set "PACKAGE=%BUNDLE%{filename}"', "call :dism_add || exit /b 1")
@@ -78,6 +91,9 @@ def render_runner(plan: BundlePlan) -> str:
         "AFTER": hex(plan.target_revision),
         "PACKAGES": "\n".join(packages),
         "STAGES": "\n".join(stages),
+        "DISM_ADD": '/Add-Driver /Driver:"%PACKAGE%"'
+        if plan.kind == "drivers"
+        else '/Add-Package /PackagePath:"%PACKAGE%"',
         "PRE_HOOKS": _hook_lines(
             tuple(hook for hook in plan.hooks if hook.phase == "pre")
         ),

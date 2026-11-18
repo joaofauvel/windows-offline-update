@@ -2,6 +2,7 @@ import os
 import shutil
 import subprocess
 from collections.abc import Callable, Iterator
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -13,8 +14,8 @@ from win_offline_update.target import TargetIdentity
 
 
 @pytest.fixture
-def plan() -> BundlePlan:
-    return BundlePlan(
+def plan(request: pytest.FixtureRequest) -> BundlePlan:
+    cumulative = BundlePlan(
         "11111111-1111-1111-1111-111111111111",
         Update("test", "Windows update"),
         TargetIdentity(
@@ -36,6 +37,21 @@ def plan() -> BundlePlan:
             "packages/checkpoint.msu": 30,
         },
     )
+    if getattr(request, "param", None) == "drivers":
+        inf = "packages/0001/example.inf"
+        return replace(
+            cumulative,
+            update=None,
+            target_revision=cumulative.target.revision,
+            commands=(inf,),
+            hooks=(
+                Hook("pre", r"Services\Example", "Start", 2),
+                Hook("post", r"Services\Example", "Start", 0),
+            ),
+            size={inf: 15, "packages/0001/example.cat": 20},
+            kind="drivers",
+        )
+    return cumulative
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Runs Windows CMD")
@@ -95,6 +111,26 @@ def test_repair_uses_post_hooks_without_installing_packages(plan: BundlePlan) ->
     assert "/Add-Package" not in repair
 
 
+@pytest.mark.parametrize("plan", ["drivers"], indirect=True)
+def test_offline_driver_job_runs_both_registry_hook_phases(
+    recovery_lab: tuple[Callable[..., subprocess.CompletedProcess[str]], Path, Path],
+) -> None:
+    run, job, trace = recovery_lab
+    result = run("apply")
+    assert result.returncode == 0, result.stdout + result.stderr
+    commands = trace.read_text()
+    assert commands.count("/Add-Driver") == 1
+    assert "/Add-Package" not in commands
+    assert (
+        commands.index("/d 0x2")
+        < commands.index("/Add-Driver")
+        < commands.index("/d 0x0")
+    )
+    assert (job / "pre-SYSTEM.hiv").is_file()
+    assert (job / "post-SYSTEM.hiv").is_file()
+    assert (job / "state.ready").is_file()
+
+
 @pytest.fixture
 def recovery_lab(
     plan: BundlePlan, tmp_path: Path
@@ -141,7 +177,9 @@ def recovery_lab(
     bundle = tmp_path / "bundle"
     (bundle / "packages").mkdir(parents=True)
     for relative, size in plan.size.items():
-        (bundle / relative).write_bytes(b"0" * size)
+        file = bundle / relative
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.write_bytes(b"0" * size)
     # Keep the actual Windows environment for the .NET test executables.
     runner = render_runner(plan).replace(
         r'if /i not "%SystemRoot%"=="X:\Windows" goto not_winre',

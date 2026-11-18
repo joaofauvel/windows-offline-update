@@ -36,7 +36,7 @@
 | `src/win_offline_update/downloads.py` | Verified streaming downloads and manifests |
 | `src/win_offline_update/{target,bundle,hooks}.py` | Windows inventory, servicing rules, bundle verification, and declarative hooks |
 | `src/win_offline_update/recovery/apply.cmd.in` | Stock WinRE entry point and durable servicing journal |
-| `examples/usb4.toml`, `docs/winre-test-vm.md` | Optional local hook example and isolated validation |
+| `hooks/usb4.toml`, `docs/winre-test-vm.md` | Optional local hook example and isolated validation |
 | `tests/`, `tests/fixtures/` | Recorded provider data, Windows command fixtures, failure injection, and bundle tests |
 
 ### Task 1 — Runnable CLI and Windows CI
@@ -64,14 +64,14 @@
 
 ### Task 3 — Bundle preparation and hook profile validation
 
-**Files:** Create `src/win_offline_update/{target,bundle,hooks}.py`, `examples/usb4.toml`, `tests/test_bundle.py`, and `tests/test_hooks.py`. Modify `cli.py` and package fixtures.
+**Files:** Create `src/win_offline_update/{target,bundle,hooks}.py`, `hooks/usb4.toml`, `tests/test_bundle.py`, and `tests/test_hooks.py`. Modify `cli.py` and package fixtures.
 
 **Consumes:** `DownloadManifest` and verified local files from Task 2. **Produces:** `read_target() -> TargetIdentity`, `load_profile(path: Path) -> HookProfile`, `prepare(manifest: DownloadManifest, target: TargetIdentity, destination: Path, *, profile: HookProfile | None) -> BundlePlan`, and `verify(bundle: Path) -> VerificationResult`.
 
 - [ ] Write tests `test_kb5132061_orders_ssu_before_target`, `test_missing_checkpoint_blocks_apply_plan`, `test_unresolved_ssu_blocks_apply_plan`, `test_driver_cab_cannot_become_quality_package`, `test_manifest_import_verifies_official_digests`, and `test_invalid_hook_key_cannot_inject_cmd`. Verify failures before implementation.
 - [ ] Validate rules by exact release, architecture, and package role. For the first real fixture, model x64 KB5132061 with checkpoint KB5043080 and SSU 26100.9971. Inspect/extract the documented SSU from the intact Microsoft package before preparing the working directory. Validate its identity and leave DISM signature enforcement enabled.
 - [ ] Implement host inventory, explicit bundle target identity, per-job marker, separate EFI BCD identity where needed, and host-side bundle verification. Preflight requires the captured baseline build. Post-boot verification requires the expected updated build and declared assertions. A changed bundle digest invalidates either check. Keep package download provenance and a local SHA-256 manifest.
-- [ ] Define v1 hook entries with phase, SYSTEM key path rooted in the selected control set when applicable, DWORD value name, expected type or previous value if provided, and desired value. Validate user-supplied strings before emission into CMD. Use `examples/usb4.toml` for the five approved service names with desired `Start = 0`.
+- [ ] Define v1 hook entries with phase, SYSTEM key path rooted in the selected control set when applicable, DWORD value name, expected type or previous value if provided, and desired value. Validate user-supplied strings before emission into CMD. Use `hooks/usb4.toml` for the five approved service names with desired `Start = 0`.
 - [ ] Add `prepare` and `verify` commands. Confirm an unsupported package still downloads and gets a manual-servicing report. Run the bundle and hook suites, then commit `feat: prepare verified offline servicing plans`.
 
 ### Task 4 — Recovery runner, journal, and hook repair

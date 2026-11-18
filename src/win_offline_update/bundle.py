@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Literal
 from uuid import UUID, uuid4
 
 from .downloads import atomic_json, matches_digest, package_hashes, safe_name
@@ -32,13 +33,14 @@ class ServicingPlan:
 @dataclass(frozen=True, slots=True)
 class BundlePlan:
     id: str
-    update: Update
+    update: Update | None
     target: TargetIdentity
     target_revision: int
     commands: tuple[str, ...]
     hooks: tuple[Hook, ...]
     paths: dict[str, str]
     size: dict[str, int]
+    kind: Literal["cumulative", "drivers"] = "cumulative"
 
 
 def resolve_plan(update: Update, target: TargetIdentity) -> ServicingPlan:
@@ -142,35 +144,77 @@ def prepare(
             paths,
             sizes,
         )
-        if profile is not None:
-            snapshot = bundle / "hooks.toml"
-            shutil.copyfile(profile, snapshot)
-            if load_profile(snapshot) != hooks:
-                raise ValueError("The profile changed during preparation.")
-            paths[snapshot.name], _ = package_hashes(snapshot)
-        script = bundle / "recovery.cmd"
-        script.write_bytes(render_runner(result).encode("ascii"))
-        paths[script.name], _ = package_hashes(script)
-        manifest = asdict(result)
-        manifest["target"]["windows"] = str(target.windows)
-        atomic_json(bundle / "plan.json", manifest)
-        root = target.windows.parent.resolve()
-        jobs = root / JOBS_PATH
-        if not jobs.resolve().is_relative_to(root):
-            raise ValueError(
-                "The recovery job directory resolves outside the target Windows volume."
-            )
-        job = jobs / job_id
-        job.mkdir(parents=True)
-        marker = job / "target.id"
-        try:
-            marker.write_bytes(f"{job_id}\r\n".encode("ascii"))
-            bundle.rename(output)
-        except OSError:
-            marker.unlink(missing_ok=True)
-            job.rmdir()
-            raise
+        _publish_bundle(bundle, output, result, profile)
     return result
+
+
+def prepare_drivers(
+    sources: list[Path],
+    target: TargetIdentity,
+    output: Path,
+    *,
+    profile: Path | None = None,
+) -> BundlePlan:
+    from .driver_bundle import stage_driver_exports
+
+    if output.exists():
+        raise ValueError("Choose a new directory for the recovery bundle.")
+    hooks = load_profile(profile) if profile is not None else ()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=output.parent) as scratch:
+        bundle = Path(scratch) / "bundle"
+        bundle.mkdir()
+        payload = stage_driver_exports(sources, target, bundle)
+        result = BundlePlan(
+            str(uuid4()),
+            None,
+            target,
+            target.revision,
+            payload.commands,
+            hooks,
+            payload.paths,
+            payload.size,
+            kind="drivers",
+        )
+        _publish_bundle(bundle, output, result, profile)
+    return result
+
+
+def _publish_bundle(
+    staging: Path, output: Path, plan: BundlePlan, profile: Path | None
+) -> None:
+    if profile is not None:
+        snapshot = staging / "hooks.toml"
+        shutil.copyfile(profile, snapshot)
+        if load_profile(snapshot) != plan.hooks:
+            raise ValueError("The profile changed during preparation.")
+        plan.paths[snapshot.name], _ = package_hashes(snapshot)
+    script = staging / "recovery.cmd"
+    script.write_bytes(render_runner(plan).encode("ascii"))
+    plan.paths[script.name], _ = package_hashes(script)
+    manifest = asdict(plan)
+    manifest["target"]["windows"] = str(plan.target.windows)
+    atomic_json(staging / "plan.json", manifest)
+    root = plan.target.windows.parent.resolve()
+    jobs = root / JOBS_PATH
+    if not jobs.resolve().is_relative_to(root):
+        raise ValueError(
+            "The recovery job directory resolves outside the target Windows volume."
+        )
+    job = jobs / plan.id
+    job.mkdir(parents=True)
+    marker = job / "target.id"
+    plan_digest = job / "plan.sha256"
+    try:
+        marker.write_bytes(f"{plan.id}\r\n".encode("ascii"))
+        digest, _ = package_hashes(staging / "plan.json")
+        plan_digest.write_text(f"{digest}\n", encoding="ascii")
+        staging.rename(output)
+    except OSError:
+        marker.unlink(missing_ok=True)
+        plan_digest.unlink(missing_ok=True)
+        job.rmdir()
+        raise
 
 
 def verify(bundle: Path, *, post_boot: bool = False) -> None:
@@ -186,7 +230,9 @@ def verify(bundle: Path, *, post_boot: bool = False) -> None:
         if not isinstance(relative, str) or not isinstance(digest, str):
             raise ValueError("Invalid file or digest in recovery plan.")
         segments = relative.split("/")
-        if len(segments) not in {1, 2} or not all(safe_name(part) for part in segments):
+        if (len(segments) > 1 and segments[0] != "packages") or not all(
+            safe_name(part) for part in segments
+        ):
             raise ValueError("Unsafe filename in recovery plan.")
         path = bundle / relative
         if (
@@ -212,6 +258,8 @@ def verify(bundle: Path, *, post_boot: bool = False) -> None:
                 f"Expected update not verified on this installation. "
                 f"Current build is {current.build}.{current.revision}."
             )
+        if manifest.get("kind") == "drivers":
+            _verify_drivers_post_boot(current, manifest)
         for hook in manifest["hooks"]:
             if hook["phase"] != "post":
                 continue
@@ -228,3 +276,28 @@ def verify(bundle: Path, *, post_boot: bool = False) -> None:
                 raise ValueError(
                     f"Post-boot DWORD assertion failed: {hook['key']} / {hook['name']}"
                 )
+
+
+def _verify_drivers_post_boot(
+    current: TargetIdentity, manifest: dict[str, object]
+) -> None:
+    job_id = str(UUID(str(manifest.get("id"))))
+    ready = current.windows.parent / JOBS_PATH / job_id / "state.ready"
+    if not ready.is_file() or ready.read_text(encoding="ascii").strip() != job_id:
+        raise ValueError("The offline driver job has no successful servicing marker.")
+    repository = current.windows / "System32/DriverStore/FileRepository"
+    commands = manifest.get("commands")
+    paths = manifest.get("paths")
+    if not isinstance(commands, list) or not commands or not isinstance(paths, dict):
+        raise ValueError("Invalid driver job inventory.")
+    for relative in commands:
+        if not isinstance(relative, str) or relative not in paths:
+            raise ValueError("Invalid driver job INF record.")
+        name = Path(relative).name
+        if not safe_name(name) or Path(name).suffix.casefold() != ".inf":
+            raise ValueError("Invalid driver job filename.")
+        if not any(
+            stored.is_file() and package_hashes(stored)[0] == paths[relative]
+            for stored in repository.glob(f"{name}_*/{name}")
+        ):
+            raise ValueError(f"Driver INF was not found in the driver store: {name}")
