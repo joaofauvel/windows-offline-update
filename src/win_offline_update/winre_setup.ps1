@@ -8,7 +8,8 @@ param(
     [Parameter(Mandatory = $true)]
     [guid]$MachineGuid,
     [string]$Launcher,
-    [string]$Profile
+    [string]$Profile,
+    [string]$HookMetadata
 )
 
 $ErrorActionPreference = 'Stop'
@@ -450,6 +451,7 @@ function Restore-RecoveryRegistration(
 }
 
 try {
+    if ($HookMetadata -and !$Profile) { throw 'Hook metadata requires a profile.' }
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = [Security.Principal.WindowsPrincipal]::new($identity)
     if (!$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
@@ -493,11 +495,17 @@ try {
     try {
         $marker = Join-Path $Root 'installed.id'
         $savedProfile = Join-Path $Root 'profile.toml'
+        $savedHookMetadata = Join-Path $Root 'hooks.json'
+        $savedSelection = Join-Path $Root 'selection.json'
         $hasMarker = Test-PlainPath $marker
         $hasProfile = Test-PlainPath $savedProfile
+        $hasHookMetadata = Test-PlainPath $savedHookMetadata
+        $hasSelection = Test-PlainPath $savedSelection
         if ($hasMarker) { Assert-ProtectedPath $marker }
         if ($hasProfile) { Assert-ProtectedPath $savedProfile }
-        if ($Action -eq 'install' -and ($hasMarker -or $hasProfile)) {
+        if ($hasHookMetadata) { Assert-ProtectedPath $savedHookMetadata }
+        if ($hasSelection) { Assert-ProtectedPath $savedSelection }
+        if ($Action -eq 'install' -and ($hasMarker -or $hasProfile -or $hasHookMetadata -or $hasSelection)) {
             throw 'The recovery menu configuration already exists. Remove the existing installation before setting up again.'
         }
         if ($Action -eq 'uninstall' -and (!$hasMarker -or [IO.File]::ReadAllText($marker).Trim() -ine $machine)) {
@@ -520,6 +528,8 @@ try {
         $oldLabel = Join-Path $work 'original-bootshell.xml'
         $stagedMarker = Join-Path $work 'installed.id'
         $stagedProfile = Join-Path $work 'profile.toml'
+        $stagedHookMetadata = Join-Path $work 'hooks.json'
+        $stagedSelection = Join-Path $work 'selection.json'
         $keepWork = $false
         $volume = $null
         try {
@@ -527,6 +537,7 @@ try {
             if ($Action -eq 'install') {
                 [IO.File]::WriteAllText($stagedMarker, ($machine + [Environment]::NewLine), $ascii)
                 if ($Profile) { [IO.File]::WriteAllBytes($stagedProfile, [IO.File]::ReadAllBytes($Profile)) }
+                if ($HookMetadata) { [IO.File]::WriteAllBytes($stagedHookMetadata, [IO.File]::ReadAllBytes($HookMetadata)) }
             }
             Copy-WinreImage $original.Wim $backup
             $originalHash = Get-WimHash $backup
@@ -566,6 +577,8 @@ try {
             if ($changed) { $volume = Open-RecoveryVolume $original }
             $markerMoved = $false
             $profileMoved = $false
+            $hookMetadataMoved = $false
+            $selectionMoved = $false
             # Keep the original image if the process is interrupted while
             # Windows RE is being replaced or restored.
             $keepWork = $true
@@ -580,12 +593,24 @@ try {
                         [IO.File]::Move($stagedProfile, $savedProfile)
                         $profileMoved = $true
                     }
+                    if ($HookMetadata) {
+                        [IO.File]::Move($stagedHookMetadata, $savedHookMetadata)
+                        $hookMetadataMoved = $true
+                    }
                     [IO.File]::Move($stagedMarker, $marker)
                     $markerMoved = $true
                 } else {
                     if ($hasProfile) {
                         [IO.File]::Move($savedProfile, $stagedProfile)
                         $profileMoved = $true
+                    }
+                    if ($hasHookMetadata) {
+                        [IO.File]::Move($savedHookMetadata, $stagedHookMetadata)
+                        $hookMetadataMoved = $true
+                    }
+                    if ($hasSelection) {
+                        [IO.File]::Move($savedSelection, $stagedSelection)
+                        $selectionMoved = $true
                     }
                     [IO.File]::Move($marker, $stagedMarker)
                     $markerMoved = $true
@@ -599,9 +624,12 @@ try {
                     }
                     if ($Action -eq 'install') {
                         if ($markerMoved) { [IO.File]::Move($marker, $stagedMarker) }
+                        if ($hookMetadataMoved) { [IO.File]::Move($savedHookMetadata, $stagedHookMetadata) }
                         if ($profileMoved) { [IO.File]::Move($savedProfile, $stagedProfile) }
                     } else {
                         if ($markerMoved) { [IO.File]::Move($stagedMarker, $marker) }
+                        if ($selectionMoved) { [IO.File]::Move($stagedSelection, $savedSelection) }
+                        if ($hookMetadataMoved) { [IO.File]::Move($stagedHookMetadata, $savedHookMetadata) }
                         if ($profileMoved) { [IO.File]::Move($stagedProfile, $savedProfile) }
                     }
                     $keepWork = $false
@@ -616,7 +644,7 @@ try {
             if (!$keepWork) {
                 try {
                     $agentFiles = @((Join-Path $work 'ReAgent-cleared.xml'), (Join-Path $work 'ReAgent-before-clear.xml'))
-                    foreach ($file in @($backup, $candidate, $label, $oldLabel, $stagedMarker, $stagedProfile) + $agentFiles) {
+                    foreach ($file in @($backup, $candidate, $label, $oldLabel, $stagedMarker, $stagedProfile, $stagedHookMetadata, $stagedSelection) + $agentFiles) {
                         if (Test-PlainPath $file) {
                             [IO.File]::SetAttributes($file, [IO.FileAttributes]::Normal)
                             [IO.File]::Delete($file)

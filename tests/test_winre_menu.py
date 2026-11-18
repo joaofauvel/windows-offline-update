@@ -106,3 +106,84 @@ def test_status_leaves_an_interrupted_job_pending(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="servicing was interrupted"):
         menu.status()
     assert pending.read_text(encoding="ascii") == f"{JOB}\n"
+
+
+def test_setup_can_replace_or_disable_saved_hooks_without_reinstalling_winre(
+    tmp_path: Path,
+) -> None:
+    from win_offline_update.hook_selection import read_selection
+    from win_offline_update.winre_menu import MENU_PATH, Menu
+
+    identity = TargetIdentity(
+        "25H2", 26200, 9974, "x64", tmp_path / "Windows", OWNER, LOADER
+    )
+    root = tmp_path / MENU_PATH
+    root.mkdir(parents=True)
+    (root / "installed.id").write_text(f"{OWNER}\n", encoding="ascii")
+    source = tmp_path / "usb4.toml"
+    source.write_text(
+        "[[hooks]]\nphase = 'post'\nkey = 'Services\\UASPStor'\nname = 'Start'\nvalue = 0\n",
+        encoding="ascii",
+    )
+    menu = Menu(identity)
+    menu.configure("install", source)
+    saved = menu.profile
+    assert saved is not None and saved != source
+    original = read_selection(saved)
+    assert original.origins[0].location == str(source.resolve())
+    source.write_text(source.read_text().replace("value = 0", "value = 1"))
+    assert read_selection(menu.profile).hooks == original.hooks
+    menu.configure("install", source)
+    assert read_selection(menu.profile).hooks[0].value == 1
+    assert read_selection(saved).hooks[0].value == 0
+    menu.configure("install")
+    assert menu.profile is None
+
+
+def test_setup_displays_pending_hooks_when_saved_selection_is_disabled(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from win_offline_update.winre_menu import MENU_PATH, Menu
+
+    identity = TargetIdentity(
+        "25H2", 26200, 9974, "x64", tmp_path / "Windows", OWNER, LOADER
+    )
+    root = tmp_path / MENU_PATH
+    root.mkdir(parents=True)
+    (root / "installed.id").write_text(f"{OWNER}\n", encoding="ascii")
+    (root / "pending.id").write_text(f"{JOB}\n", encoding="ascii")
+    pending = root / "bundles" / JOB
+    pending.mkdir(parents=True)
+    (pending / "hooks.toml").write_text(
+        "[[hooks]]\nphase = 'post'\nkey = 'Services\\UASPStor'\nname = 'Start'\nvalue = 0\n",
+        encoding="ascii",
+    )
+    (pending / "plan.json").write_text('{"hooks": [{}]}', encoding="ascii")
+    menu = Menu(identity)
+    menu.configure("install")
+    menu.describe_hooks()
+    output = capsys.readouterr().out
+    assert "Hooks: none." in output
+    assert f"Pending job {JOB}" in output
+    assert "UASPStor" in output
+
+
+def test_pending_job_cannot_restart_with_conflicting_hook_flags(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from win_offline_update.winre_menu import MENU_PATH, Menu
+
+    identity = TargetIdentity(
+        "25H2", 26200, 9974, "x64", tmp_path / "Windows", OWNER, LOADER
+    )
+    root = tmp_path / MENU_PATH
+    root.mkdir(parents=True)
+    (root / "installed.id").write_text(f"{OWNER}\n", encoding="ascii")
+    (root / "pending.id").write_text(f"{JOB}\n", encoding="ascii")
+    menu = Menu(identity)
+    called = []
+    monkeypatch.setattr(menu, "offer_restart", lambda: called.append(True))
+    with pytest.raises(ValueError, match="pending job has captured hooks"):
+        menu.resume(allow_restart=False)
+    assert called == []
+    assert (root / "pending.id").is_file()

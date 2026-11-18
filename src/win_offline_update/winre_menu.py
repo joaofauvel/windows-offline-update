@@ -14,8 +14,9 @@ from uuid import UUID
 
 from . import bundle
 from .downloads import package_hashes
-from .hooks import load_profile
 from .target import TargetIdentity
+lazy from .hook_registry import HookRegistry
+lazy from .hook_selection import describe_selection, read_selection, resolve_selection
 
 MENU_PATH = bundle.JOBS_PATH.parent / "menu"
 
@@ -67,6 +68,21 @@ class Menu:
 
     @property
     def profile(self) -> Path | None:
+        selected = self.root / "selection.json"
+        if selected.is_file():
+            record = json.loads(selected.read_text(encoding="ascii"))
+            if not isinstance(record, dict) or record.keys() != {"profile"}:
+                raise ValueError("Invalid saved hook selection.")
+            profile = record["profile"]
+            if profile is None:
+                return None
+            if not isinstance(profile, str):
+                raise ValueError("Invalid saved hook profile.")
+            version = _id(profile)
+            path = self.root / "selections" / version / "profile.toml"
+            if path.resolve() != path or not path.is_file():
+                raise ValueError("The saved hook profile is missing or unsafe.")
+            return path
         path = self.root / "profile.toml"
         return path if path.is_file() else None
 
@@ -181,6 +197,7 @@ class Menu:
         if not self.installed:
             print("WinRE menu is not installed. Run wuo setup.")
             return
+        self.describe_hooks()
         with self._lock():
             job_id = self._pending_id()
             if job_id is None:
@@ -201,11 +218,12 @@ class Menu:
             (self.root / "pending.id").unlink(missing_ok=True)
         print("Pending job cleared. Its files and logs are retained.")
 
-    def resume(self) -> bool:
+    def resume(self, *, allow_restart: bool = True) -> bool:
         with self._lock():
             job_id = self._pending_id()
             if job_id is None:
                 return True
+            self.describe_hooks()
             if self._verify_completed(job_id):
                 (self.root / "pending.id").unlink()
                 return True
@@ -215,8 +233,33 @@ class Menu:
                     f"Offline servicing was interrupted. See {state / 'recovery.log'}."
                 )
         print("An update is already staged.")
+        if not allow_restart:
+            raise ValueError(
+                "The pending job has captured hooks. Finish it or run wuo status --discard before selecting hooks for a new job."
+            )
         self.offer_restart()
         return False
+
+    def describe_hooks(self, registry: HookRegistry | None = None) -> None:
+        if not self.installed:
+            print("Saved hooks: none. WinRE menu is not installed.")
+            return
+        registry = registry or HookRegistry()
+        print("Saved hooks for future jobs")
+        describe_selection(read_selection(self.profile), registry)
+        self.describe_pending_hooks(registry)
+
+    def describe_pending_hooks(self, registry: HookRegistry | None = None) -> None:
+        job_id = self._pending_id()
+        if job_id is not None:
+            pending = self.root / "bundles" / job_id
+            if not (pending / "plan.json").is_file():
+                print(f"Pending job {job_id}: hook selection unavailable.")
+                return
+            plan = json.loads((pending / "plan.json").read_text(encoding="utf-8"))
+            profile = pending / "hooks.toml" if plan.get("hooks") else None
+            print(f"Pending job {job_id} uses these captured hooks")
+            describe_selection(read_selection(profile), registry)
 
     def offer_restart(self) -> None:
         pending = self._pending_id()
@@ -266,6 +309,12 @@ class Menu:
             self.configure("uninstall")
 
     def configure(self, action: str, profile: Path | None = None) -> None:
+        selected = read_selection(profile)
+        if action == "install" and self.installed:
+            with self._lock():
+                self._save_selection(selected.path)
+            print("Saved hooks for future update jobs.")
+            return
         resources = files("win_offline_update")
         with ExitStack() as workspace:
             script = workspace.enter_context(
@@ -296,9 +345,44 @@ class Menu:
                     tempfile.TemporaryDirectory(prefix="wuo-profile-")
                 )
                 snapshot = Path(folder) / "profile.toml"
-                shutil.copyfile(profile, snapshot)
-                load_profile(snapshot)
+                metadata = profile.with_name("hooks.json")
+                if metadata.is_file():
+                    shutil.copyfile(profile, snapshot)
+                    shutil.copyfile(metadata, snapshot.with_name("hooks.json"))
+                else:
+                    resolve_selection((), profile, Path(folder))
+                read_selection(snapshot)
                 command.extend(("-Profile", snapshot))
+                command.extend(("-HookMetadata", snapshot.with_name("hooks.json")))
             output = _run(command)
         if output.strip():
             print(output.strip())
+
+    def _save_selection(self, profile: Path | None) -> None:
+        from uuid import uuid4
+
+        from .downloads import atomic_json
+
+        if profile is None:
+            atomic_json(self.root / "selection.json", {"profile": None})
+            return
+        # Keep a complete snapshot behind one atomic pointer so readers see one generation.
+        selected = read_selection(profile)
+        generations = self.root / "selections"
+        generations.mkdir(exist_ok=True)
+        version = str(uuid4())
+        destination = generations / version
+        with tempfile.TemporaryDirectory(dir=generations, prefix="save-") as temporary:
+            draft = Path(temporary) / "selection"
+            draft.mkdir()
+            metadata = profile.with_name("hooks.json")
+            if metadata.is_file():
+                shutil.copyfile(profile, draft / "profile.toml")
+                shutil.copyfile(metadata, draft / "hooks.json")
+            else:
+                resolve_selection((), profile, draft)
+            check = read_selection(draft / "profile.toml")
+            if check.hooks != selected.hooks or check.origins != selected.origins:
+                raise ValueError("Hook selection changed while saving.")
+            draft.rename(destination)
+            atomic_json(self.root / "selection.json", {"profile": version})
