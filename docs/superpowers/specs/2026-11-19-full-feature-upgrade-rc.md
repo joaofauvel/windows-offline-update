@@ -144,6 +144,17 @@ a candidate for redirecting writes inside a single recovery session. The
 actual Setup process still needs to demonstrate that the primary boot path
 and firmware routing stay under recovery's control, including on cold restart.
 
+The follow-up started native SafeOS from the primary EFI with two fixed disks.
+`/sysstore` failed before the handler ran. A separate fork started SafeOS from
+scratch through a one-shot firmware entry. Setup finished SafeOS and wrote
+the replacement boot sequence into scratch. The primary BCD's default,
+display order, and boot sequence kept their previous values. Setup also
+moved scratch to the front of the persistent UEFI boot order. After a
+deliberately rejected USB4 hook, a fresh cold boot followed that firmware
+order and ran the replacement kernel. A separate scratch EFI store alone
+therefore fails the release gate. A usable boot gate must prevent the
+replacement kernel from starting even if Setup changes firmware boot order.
+
 Before publishing an install-capable RC, run the workflow through the actual
 WinRE menu without a hypervisor timing dependency. Test a real keep-apps version
 upgrade, single-disk and split EFI, an interrupted preparation, a failed hook,
