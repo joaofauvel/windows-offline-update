@@ -136,6 +136,14 @@ cold-booted with the original marker, machine GUID, and build. This establishes
 a candidate Windows-volume restore. The next rehearsal needs recovery after
 Setup changes the boot state, with the relevant EFI and WinRE volumes present.
 
+A recovery-media test redirected one BCDEdit write to a scratch EFI store
+using `/sysstore` on fixed virtual disks. The same command failed with the
+EFI copies attached over USB. Offline inspection found the test edit in the
+scratch boot entries and metadata changes in the primary BCD. Treat this as
+a candidate for redirecting writes inside a single recovery session. The
+actual Setup process still needs to demonstrate that the primary boot path
+and firmware routing stay under recovery's control, including on cold restart.
+
 Before publishing an install-capable RC, run the workflow through the actual
 WinRE menu without a hypervisor timing dependency. Test a real keep-apps version
 upgrade, single-disk and split EFI, an interrupted preparation, a failed hook,
