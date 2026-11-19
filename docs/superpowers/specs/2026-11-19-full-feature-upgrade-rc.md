@@ -129,6 +129,13 @@ installation was restored. Do not use the presence or label of this entry as
 proof of rollback. The builder must demonstrate an explicit rollback mechanism
 or a restorable snapshot under the relevant live failure and cold-restart tests.
 
+A separate split-EFI Pro trial backed up just the Windows volume to a virtual
+USB disk with Windows Backup. Standalone recovery media restored the volume
+while the guest's EFI disk was detached. After reattaching EFI, Windows
+cold-booted with the original marker, machine GUID, and build. This establishes
+a candidate Windows-volume restore. The next rehearsal needs recovery after
+Setup changes the boot state, with the relevant EFI and WinRE volumes present.
+
 Before publishing an install-capable RC, run the workflow through the actual
 WinRE menu without a hypervisor timing dependency. Test a real keep-apps version
 upgrade, single-disk and split EFI, an interrupted preparation, a failed hook,
