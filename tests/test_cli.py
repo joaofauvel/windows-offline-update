@@ -6,15 +6,15 @@ import pytest
 
 @pytest.mark.parametrize(("arguments", "exit_code"), [(["--help"], 0), (["bad"], 2)])
 def test_cli_exit_code(arguments: list[str], exit_code: int) -> None:
-    cli = importlib.import_module("win_offline_update.cli")
+    cli = importlib.import_module("wuo.cli")
     assert cli.main(arguments) == exit_code
 
 
 def test_download_uses_a_default_folder(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from win_offline_update import cli, downloads
-    from win_offline_update.models import DownloadManifest, Update
+    from wuo import cli, downloads
+    from wuo.models import DownloadManifest, Update
 
     package = Update("example-update", "An example")
     destinations = []

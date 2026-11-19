@@ -50,7 +50,7 @@ def _commit(repo: Path, message: str = "Change hooks") -> str:
 
 
 def test_bundled_official_hooks_are_available_without_registry(tmp_path: Path) -> None:
-    from win_offline_update.hook_registry import HookRegistry
+    from wuo.hook_registry import HookRegistry
 
     registry = HookRegistry(tmp_path / "registry")
     official = registry.get("official/usb4")
@@ -67,7 +67,7 @@ def test_bundled_official_hooks_are_available_without_registry(tmp_path: Path) -
 def test_add_pins_commit_and_get_does_not_follow_upstream(
     repository: Path, tmp_path: Path
 ) -> None:
-    from win_offline_update.hook_registry import HookRegistry
+    from wuo.hook_registry import HookRegistry
 
     registry = HookRegistry(tmp_path / "registry")
     revision = _git(repository, "rev-parse", "HEAD")
@@ -91,7 +91,7 @@ def test_add_pins_commit_and_get_does_not_follow_upstream(
 def test_refresh_publishes_new_profiles_without_mutating_captured_profile(
     repository: Path, tmp_path: Path
 ) -> None:
-    from win_offline_update.hook_registry import HookRegistry
+    from wuo.hook_registry import HookRegistry
 
     registry = HookRegistry(tmp_path / "registry")
     selected = registry.add(str(repository), "vendor")[0]
@@ -106,7 +106,7 @@ def test_refresh_publishes_new_profiles_without_mutating_captured_profile(
 
 
 def test_freshness_compares_bytes_not_commit(repository: Path, tmp_path: Path) -> None:
-    from win_offline_update.hook_registry import HookRegistry
+    from wuo.hook_registry import HookRegistry
 
     registry = HookRegistry(tmp_path / "registry")
     selected = registry.add(str(repository), "vendor")[0]
@@ -120,7 +120,7 @@ def test_freshness_compares_bytes_not_commit(repository: Path, tmp_path: Path) -
 
 
 def test_freshness_reports_removed_profile(repository: Path, tmp_path: Path) -> None:
-    from win_offline_update.hook_registry import HookRegistry
+    from wuo.hook_registry import HookRegistry
 
     registry = HookRegistry(tmp_path / "registry")
     selected = registry.add(str(repository), "vendor")[0]
@@ -134,7 +134,7 @@ def test_freshness_reports_removed_profile(repository: Path, tmp_path: Path) -> 
 def test_failed_refresh_keeps_last_valid_snapshot(
     repository: Path, tmp_path: Path
 ) -> None:
-    from win_offline_update.hook_registry import HookRegistry
+    from wuo.hook_registry import HookRegistry
 
     registry = HookRegistry(tmp_path / "registry")
     selected = registry.add(str(repository), "vendor")[0]
@@ -150,7 +150,7 @@ def test_failed_refresh_keeps_last_valid_snapshot(
 def test_missing_upstream_is_unknown_and_keeps_snapshot(
     repository: Path, tmp_path: Path
 ) -> None:
-    from win_offline_update.hook_registry import HookRegistry
+    from wuo.hook_registry import HookRegistry
 
     registry = HookRegistry(tmp_path / "registry")
     selected = registry.add(str(repository), "vendor")[0]
@@ -165,7 +165,7 @@ def test_missing_upstream_is_unknown_and_keeps_snapshot(
 def test_explicit_tag_stays_pinned_after_default_branch_advances(
     repository: Path, tmp_path: Path
 ) -> None:
-    from win_offline_update.hook_registry import HookRegistry
+    from wuo.hook_registry import HookRegistry
 
     _git(repository, "tag", "v1")
     registry = HookRegistry(tmp_path / "registry")
@@ -178,7 +178,7 @@ def test_explicit_tag_stays_pinned_after_default_branch_advances(
 
 
 def test_git_symlink_blob_is_rejected(repository: Path, tmp_path: Path) -> None:
-    from win_offline_update.hook_registry import HookRegistry
+    from wuo.hook_registry import HookRegistry
 
     blob = _git(repository, "hash-object", "-w", "--stdin", input=b"example.toml")
     _git(
@@ -198,7 +198,7 @@ def test_git_symlink_blob_is_rejected(repository: Path, tmp_path: Path) -> None:
 def test_unsafe_or_reserved_source_names_are_rejected(
     repository: Path, tmp_path: Path, name: str
 ) -> None:
-    from win_offline_update.hook_registry import HookRegistry
+    from wuo.hook_registry import HookRegistry
 
     with pytest.raises(ValueError, match="name|reserved"):
         HookRegistry(tmp_path / "registry").add(str(repository), name)
@@ -217,14 +217,14 @@ def test_unsafe_or_reserved_source_names_are_rejected(
 def test_unsupported_transports_are_rejected_before_git(
     tmp_path: Path, repo: str
 ) -> None:
-    from win_offline_update.hook_registry import HookRegistry
+    from wuo.hook_registry import HookRegistry
 
     with pytest.raises(ValueError, match="repository|transport"):
         HookRegistry(tmp_path / "registry").add(repo, "vendor")
 
 
 def test_cached_content_tampering_is_rejected(repository: Path, tmp_path: Path) -> None:
-    from win_offline_update.hook_registry import HookRegistry
+    from wuo.hook_registry import HookRegistry
 
     root = tmp_path / "registry"
     registry = HookRegistry(root)
@@ -239,7 +239,7 @@ def test_cached_content_tampering_is_rejected(repository: Path, tmp_path: Path) 
 def test_registry_snapshot_path_traversal_is_rejected(
     repository: Path, tmp_path: Path
 ) -> None:
-    from win_offline_update.hook_registry import HookRegistry
+    from wuo.hook_registry import HookRegistry
 
     root = tmp_path / "registry"
     registry = HookRegistry(root)
@@ -256,7 +256,7 @@ def test_registry_snapshot_path_traversal_is_rejected(
 def test_remove_hides_source_and_reports_saved_selection_removed(
     repository: Path, tmp_path: Path
 ) -> None:
-    from win_offline_update.hook_registry import HookRegistry
+    from wuo.hook_registry import HookRegistry
 
     registry = HookRegistry(tmp_path / "registry")
     selected = registry.add(str(repository), "vendor")[0]
@@ -272,7 +272,7 @@ def test_remove_hides_source_and_reports_saved_selection_removed(
 def test_freshness_fetch_is_shared_across_profiles_for_one_registry(
     repository: Path, tmp_path: Path
 ) -> None:
-    from win_offline_update.hook_registry import HookRegistry
+    from wuo.hook_registry import HookRegistry
 
     (repository / "hooks" / "second.toml").write_bytes(_profile())
     _commit(repository)
@@ -287,7 +287,7 @@ def test_freshness_fetch_is_shared_across_profiles_for_one_registry(
 
 
 def test_refresh_invalidates_freshness_cache(repository: Path, tmp_path: Path) -> None:
-    from win_offline_update.hook_registry import HookRegistry
+    from wuo.hook_registry import HookRegistry
 
     registry = HookRegistry(tmp_path / "registry")
     selected = registry.add(str(repository), "vendor")[0]
@@ -303,7 +303,7 @@ def test_refresh_invalidates_freshness_cache(repository: Path, tmp_path: Path) -
 def test_refspec_injection_and_invalid_names_are_rejected(
     repository: Path, tmp_path: Path
 ) -> None:
-    from win_offline_update.hook_registry import HookRegistry
+    from wuo.hook_registry import HookRegistry
 
     registry = HookRegistry(tmp_path / "registry")
     for ref in [
@@ -321,7 +321,7 @@ def test_refspec_injection_and_invalid_names_are_rejected(
 def test_large_profile_is_rejected_without_publishing(
     repository: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import win_offline_update.hook_registry as module
+    import wuo.hook_registry as module
 
     monkeypatch.setattr(module, "MAX_PROFILE_BYTES", len(_profile()) - 1)
     root = tmp_path / "registry"
@@ -335,7 +335,7 @@ def test_large_profile_is_rejected_without_publishing(
 def test_timeout_leaves_current_snapshot_available(
     repository: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import win_offline_update.hook_registry as module
+    import wuo.hook_registry as module
 
     registry = module.HookRegistry(tmp_path / "registry")
     selected = registry.add(str(repository), "vendor")[0]
@@ -351,7 +351,7 @@ def test_timeout_leaves_current_snapshot_available(
 def test_git_submodule_named_as_profile_is_rejected(
     repository: Path, tmp_path: Path
 ) -> None:
-    from win_offline_update.hook_registry import HookRegistry
+    from wuo.hook_registry import HookRegistry
 
     commit = _git(repository, "rev-parse", "HEAD")
     _git(
@@ -370,7 +370,7 @@ def test_git_submodule_named_as_profile_is_rejected(
 def test_only_root_hook_profiles_are_discovered(
     repository: Path, tmp_path: Path
 ) -> None:
-    from win_offline_update.hook_registry import HookRegistry
+    from wuo.hook_registry import HookRegistry
 
     nested = repository / "hooks" / "nested"
     nested.mkdir()
@@ -384,7 +384,7 @@ def test_only_root_hook_profiles_are_discovered(
 
 
 def test_cached_snapshot_junction_is_rejected(repository: Path, tmp_path: Path) -> None:
-    from win_offline_update.hook_registry import HookRegistry
+    from wuo.hook_registry import HookRegistry
 
     root = tmp_path / "registry"
     registry = HookRegistry(root)
@@ -408,7 +408,7 @@ def test_cached_snapshot_junction_is_rejected(repository: Path, tmp_path: Path) 
 def test_refresh_all_is_atomic_when_one_source_is_invalid(
     repository: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import win_offline_update.hook_registry as module
+    import wuo.hook_registry as module
 
     monkeypatch.setattr(module, "OFFICIAL_REPOSITORY", str(repository))
     broken_repo = tmp_path / "broken"
@@ -434,7 +434,7 @@ def test_refresh_all_is_atomic_when_one_source_is_invalid(
 def test_explicit_official_refresh_publishes_fixed_upstream_overlay(
     repository: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import win_offline_update.hook_registry as module
+    import wuo.hook_registry as module
 
     monkeypatch.setattr(module, "OFFICIAL_REPOSITORY", str(repository))
     registry = module.HookRegistry(tmp_path / "registry")
@@ -459,7 +459,7 @@ def test_explicit_official_refresh_publishes_fixed_upstream_overlay(
 def test_refresh_all_includes_official_without_a_registered_source(
     repository: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import win_offline_update.hook_registry as module
+    import wuo.hook_registry as module
 
     monkeypatch.setattr(module, "OFFICIAL_REPOSITORY", str(repository))
     registry = module.HookRegistry(tmp_path / "registry")
@@ -472,7 +472,7 @@ def test_refresh_all_includes_official_without_a_registered_source(
 def test_official_overlay_cannot_redirect_the_fixed_repository(
     repository: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import win_offline_update.hook_registry as module
+    import wuo.hook_registry as module
 
     monkeypatch.setattr(module, "OFFICIAL_REPOSITORY", str(repository))
     root = tmp_path / "registry"
@@ -490,7 +490,7 @@ def test_official_overlay_cannot_redirect_the_fixed_repository(
 def test_official_profile_cached_before_repo_rename_remains_usable(
     repository: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import win_offline_update.hook_registry as module
+    import wuo.hook_registry as module
 
     root = tmp_path / "registry"
     registry = module.HookRegistry(root)
@@ -514,7 +514,7 @@ def test_official_profile_cached_before_repo_rename_remains_usable(
 def test_refresh_can_publish_profile_removal_without_reusing_bundled_data(
     repository: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import win_offline_update.hook_registry as module
+    import wuo.hook_registry as module
 
     monkeypatch.setattr(module, "OFFICIAL_REPOSITORY", str(repository))
     registry = module.HookRegistry(tmp_path / "registry")
@@ -531,7 +531,7 @@ def test_refresh_can_publish_profile_removal_without_reusing_bundled_data(
 def test_registry_root_under_junction_is_rejected(
     repository: Path, tmp_path: Path
 ) -> None:
-    from win_offline_update.hook_registry import HookRegistry
+    from wuo.hook_registry import HookRegistry
 
     parent = tmp_path / "real"
     root = parent / "registry"
@@ -555,7 +555,7 @@ def test_registry_root_under_junction_is_rejected(
 def test_git_timeout_terminates_owned_helper_processes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import win_offline_update.hook_registry as module
+    import wuo.hook_registry as module
 
     helper = tmp_path / "fake_git.py"
     helper.write_text(
@@ -590,7 +590,7 @@ def test_git_timeout_terminates_owned_helper_processes(
 def test_concurrent_registry_mutations_fail_busy_without_losing_sources(
     repository: Path, tmp_path: Path
 ) -> None:
-    from win_offline_update.hook_registry import HookRegistry
+    from wuo.hook_registry import HookRegistry
 
     root = tmp_path / "registry"
     registry = HookRegistry(root)

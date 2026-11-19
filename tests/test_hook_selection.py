@@ -9,7 +9,7 @@ import pytest
 def test_no_selection_is_explicit(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from win_offline_update.hook_selection import describe_selection, resolve_selection
+    from wuo.hook_selection import describe_selection, resolve_selection
 
     selection = resolve_selection([], None, tmp_path / "capture")
 
@@ -23,7 +23,7 @@ def test_no_selection_is_explicit(
 def test_local_selection_keeps_original_bytes_and_detects_source_changes(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from win_offline_update.hook_selection import (
+    from wuo.hook_selection import (
         describe_selection,
         read_selection,
         resolve_selection,
@@ -54,7 +54,7 @@ def test_local_selection_keeps_original_bytes_and_detects_source_changes(
 def test_legacy_snapshot_describes_captured_operations_without_remote_checks(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from win_offline_update.hook_selection import describe_selection, read_selection
+    from wuo.hook_selection import describe_selection, read_selection
 
     legacy = tmp_path / "profile.toml"
     legacy.write_text(
@@ -74,7 +74,7 @@ def test_legacy_snapshot_describes_captured_operations_without_remote_checks(
 
 
 def test_modified_snapshot_is_rejected_even_if_valid_toml(tmp_path: Path) -> None:
-    from win_offline_update.hook_selection import read_selection, resolve_selection
+    from wuo.hook_selection import read_selection, resolve_selection
 
     local = tmp_path / "source.toml"
     local.write_text('[[hooks]]\nphase="post"\nkey="Setup"\nname="Start"\nvalue=0\n')
@@ -92,7 +92,7 @@ def test_modified_snapshot_is_rejected_even_if_valid_toml(tmp_path: Path) -> Non
 def test_invalid_metadata_is_rejected(
     tmp_path: Path, field: str, value: object
 ) -> None:
-    from win_offline_update.hook_selection import read_selection, resolve_selection
+    from wuo.hook_selection import read_selection, resolve_selection
 
     local = tmp_path / "source.toml"
     local.write_text("hooks=[]\n")
@@ -107,7 +107,7 @@ def test_invalid_metadata_is_rejected(
 
 
 def test_origin_content_and_hash_must_match_selected_operations(tmp_path: Path) -> None:
-    from win_offline_update.hook_selection import read_selection, resolve_selection
+    from wuo.hook_selection import read_selection, resolve_selection
 
     local = tmp_path / "source.toml"
     local.write_text('[[hooks]]\nphase="post"\nkey="Setup"\nname="Start"\nvalue=0\n')
@@ -130,7 +130,7 @@ def test_origin_content_and_hash_must_match_selected_operations(tmp_path: Path) 
 def test_invalid_origin_metadata_is_rejected(
     tmp_path: Path, field: str, value: object
 ) -> None:
-    from win_offline_update.hook_selection import read_selection, resolve_selection
+    from wuo.hook_selection import read_selection, resolve_selection
 
     local = tmp_path / "source.toml"
     local.write_text("hooks=[]\n")
@@ -147,8 +147,8 @@ def test_invalid_origin_metadata_is_rejected(
 def test_named_profiles_combine_with_valid_toml_and_pinned_provenance(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from win_offline_update.hook_registry import Freshness, HookOrigin, HookProfile
-    from win_offline_update.hook_selection import (
+    from wuo.hook_registry import Freshness, HookOrigin, HookProfile
+    from wuo.hook_selection import (
         describe_selection,
         read_selection,
         resolve_selection,
@@ -197,8 +197,8 @@ def test_named_profiles_combine_with_valid_toml_and_pinned_provenance(
 def test_combined_profiles_reject_case_insensitive_duplicate_targets(
     tmp_path: Path,
 ) -> None:
-    from win_offline_update.hook_registry import HookOrigin, HookProfile
-    from win_offline_update.hook_selection import resolve_selection
+    from wuo.hook_registry import HookOrigin, HookProfile
+    from wuo.hook_selection import resolve_selection
 
     class Registry:
         def get(self, name: str) -> HookProfile:
@@ -232,8 +232,8 @@ def test_combined_profiles_reject_case_insensitive_duplicate_targets(
 def test_stale_named_selection_warns_with_refresh_and_reselection_commands(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], state: str, source: str
 ) -> None:
-    from win_offline_update.hook_registry import Freshness, HookOrigin, HookProfile
-    from win_offline_update.hook_selection import describe_selection, resolve_selection
+    from wuo.hook_registry import Freshness, HookOrigin, HookProfile
+    from wuo.hook_selection import describe_selection, resolve_selection
 
     content = b'[[hooks]]\nphase="post"\nkey="Setup"\nname="Start"\nvalue=0\n'
 
@@ -271,7 +271,7 @@ def test_stale_named_selection_warns_with_refresh_and_reselection_commands(
 
 
 def test_profile_and_named_hooks_cannot_be_selected_together(tmp_path: Path) -> None:
-    from win_offline_update.hook_selection import resolve_selection
+    from wuo.hook_selection import resolve_selection
 
     with pytest.raises(ValueError, match="(--hook|profile|mutually)"):
         resolve_selection(

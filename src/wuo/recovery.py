@@ -103,11 +103,7 @@ def render_runner(plan: BundlePlan) -> str:
                 )
             )
     state_checks.append("exit /b 0")
-    template = (
-        files("win_offline_update")
-        .joinpath("recovery.cmd.in")
-        .read_text(encoding="ascii")
-    )
+    template = files("wuo").joinpath("recovery.cmd.in").read_text(encoding="ascii")
     replacements = {
         "JOB": str(UUID(plan.id)),
         "MACHINE": str(UUID(plan.target.machine_guid)),

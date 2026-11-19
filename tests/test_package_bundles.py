@@ -8,10 +8,10 @@ from pathlib import Path
 
 import pytest
 
-from win_offline_update import bundle
-from win_offline_update.models import Update, UpdateFile
-from win_offline_update.recovery import render_runner
-from win_offline_update.target import TargetIdentity
+from wuo import bundle
+from wuo.models import Update, UpdateFile
+from wuo.recovery import render_runner
+from wuo.target import TargetIdentity
 
 UPDATE_ID = "74d220af-2680-4c76-8b90-b415b8f35b0d"
 MACHINE = "11111111-1111-1111-1111-111111111111"

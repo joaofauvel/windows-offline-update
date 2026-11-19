@@ -7,7 +7,7 @@ import pytest
 
 pytestmark = pytest.mark.skipif(os.name != "nt", reason="Requires Windows PowerShell")
 
-SCRIPT = Path(__file__).parents[1] / "src" / "win_offline_update" / "winre_setup.ps1"
+SCRIPT = Path(__file__).parents[1] / "src" / "wuo" / "winre_setup.ps1"
 MACHINE = "12345678-1234-1234-1234-123456789abc"
 
 

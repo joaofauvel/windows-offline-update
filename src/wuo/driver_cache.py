@@ -65,11 +65,7 @@ async def _copy_from_cache(
     offer: Offer, identity: TargetIdentity, payload: Path
 ) -> list[str]:
     powershell = identity.windows / "System32/WindowsPowerShell/v1.0/powershell.exe"
-    script = (
-        files("win_offline_update")
-        .joinpath("driver_cache.ps1")
-        .read_text(encoding="utf-8")
-    )
+    script = files("wuo").joinpath("driver_cache.ps1").read_text(encoding="utf-8")
     request = json.dumps(
         {
             "update_id": offer.id,

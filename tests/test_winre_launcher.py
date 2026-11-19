@@ -6,7 +6,7 @@ from typing import NamedTuple
 
 import pytest
 
-TEMPLATE = Path(__file__).parents[1] / "src/win_offline_update/winre_launcher.cmd.in"
+TEMPLATE = Path(__file__).parents[1] / "src/wuo/winre_launcher.cmd.in"
 MACHINE = "11111111-aaaa-1111-1111-111111111111"
 JOB = "22222222-bbbb-2222-2222-222222222222"
 WINDOWS = "\\\\?\\Volume{33333333-3333-3333-3333-333333333333}\\"

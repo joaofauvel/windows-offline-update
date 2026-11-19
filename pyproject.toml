@@ -17,19 +17,19 @@ requires = ["hatchling>=1.27,<2"]
 build-backend = "hatchling.build"
 
 [project.scripts]
-wuo = "win_offline_update.cli:main"
+wuo = "wuo.cli:main"
 
 [project.urls]
 Repository = "https://github.com/joaofauvel/wuo"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/win_offline_update"]
+packages = ["src/wuo"]
 
 [tool.hatch.build.targets.wheel.force-include]
-"hooks" = "win_offline_update/bundled_hooks"
+"hooks" = "wuo/bundled_hooks"
 
 [tool.hatch.build.targets.sdist]
-include = ["/LICENSE", "/README.md", "/hooks", "/pyproject.toml", "/src/win_offline_update"]
+include = ["/LICENSE", "/README.md", "/hooks", "/pyproject.toml", "/src/wuo"]
 
 [dependency-groups]
 dev = ["mypy>=1.19", "pytest>=9", "ruff>=0.15"]

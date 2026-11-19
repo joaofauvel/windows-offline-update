@@ -110,8 +110,10 @@ settings.
    and installs the prepared job, then restarts Windows on success.
 
 An existing recovery installation may still show **Windows Offline Update**.
-To change its label, finish any pending job, record your selected hooks with
-`wuo status`, then run `wuo remove` and repeat `wuo setup` with the same hooks.
+That entry still works. To change its label, finish any pending job and check
+`wuo status` to make sure your selected profiles are still available and match
+the saved selection. Then run `wuo remove` and repeat `wuo setup` with those
+profiles. Keep the existing entry if you need its saved profile copy.
 
 On a dual-boot PC, select your usual Windows entry after the restart. Run
 `wuo status` in Windows to check the result. Run `wuo update` again after recovery

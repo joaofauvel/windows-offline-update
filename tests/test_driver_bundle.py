@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from win_offline_update import driver_bundle
-from win_offline_update.target import TargetIdentity
+from wuo import driver_bundle
+from wuo.target import TargetIdentity
 
 TARGET = TargetIdentity(
     "25H2", 26200, 9974, "x64", Path("C:/Windows"), "machine", "", "Client"

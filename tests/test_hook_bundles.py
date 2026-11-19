@@ -3,10 +3,10 @@ from pathlib import Path
 
 import pytest
 
-from win_offline_update import bundle
-from win_offline_update.hook_registry import HookRegistry
-from win_offline_update.hook_selection import read_selection, resolve_selection
-from win_offline_update.target import TargetIdentity
+from wuo import bundle
+from wuo.hook_registry import HookRegistry
+from wuo.hook_selection import read_selection, resolve_selection
+from wuo.target import TargetIdentity
 
 
 def test_bundle_binds_provenance_and_displays_effective_hooks(tmp_path: Path) -> None:

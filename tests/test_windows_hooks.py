@@ -3,8 +3,8 @@ from pathlib import Path
 
 import pytest
 
-from win_offline_update import windows_hooks
-from win_offline_update.hooks import Hook
+from wuo import windows_hooks
+from wuo.hooks import Hook
 
 
 def test_expected_values_are_checked_before_any_registry_write(
@@ -52,8 +52,8 @@ def test_post_hooks_run_when_native_installer_raises(
 def test_native_capture_preserves_validated_named_hook_provenance(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from win_offline_update.downloads import package_hashes
-    from win_offline_update.hook_selection import read_selection, resolve_selection
+    from wuo.downloads import package_hashes
+    from wuo.hook_selection import read_selection, resolve_selection
 
     selected = resolve_selection(("official/usb4",), None, tmp_path / "selected")
     monkeypatch.setattr(windows_hooks, "_backup", lambda *_: None)

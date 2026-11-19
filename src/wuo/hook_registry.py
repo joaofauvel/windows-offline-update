@@ -517,7 +517,7 @@ class HookRegistry:
 
     @staticmethod
     def _official() -> list[HookProfile]:
-        bundled = resources.files("win_offline_update").joinpath("bundled_hooks")
+        bundled = resources.files("wuo").joinpath("bundled_hooks")
         if not bundled.is_dir():
             # Source checkouts keep the canonical collection at repository root.
             editable = Path(__file__).resolve().parents[2] / "hooks"

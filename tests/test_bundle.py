@@ -3,8 +3,8 @@ from pathlib import Path
 
 import pytest
 
-from win_offline_update.catalog import parse_files, parse_search
-from win_offline_update.models import Update
+from wuo.catalog import parse_files, parse_search
+from wuo.models import Update
 
 FIXTURES = Path(__file__).with_name("fixtures")
 
@@ -20,8 +20,8 @@ def november_update() -> Update:
 def test_known_cumulative_uses_generic_package_eligibility(
     november_update: Update,
 ) -> None:
-    from win_offline_update.bundle import resolve_plan
-    from win_offline_update.target import TargetIdentity
+    from wuo.bundle import resolve_plan
+    from wuo.target import TargetIdentity
 
     target = TargetIdentity(
         "25H2",
@@ -43,8 +43,8 @@ def test_known_cumulative_uses_generic_package_eligibility(
 def test_eligibility_does_not_guess_checkpoint_dependencies(
     november_update: Update,
 ) -> None:
-    from win_offline_update.bundle import resolve_plan
-    from win_offline_update.target import TargetIdentity
+    from wuo.bundle import resolve_plan
+    from wuo.target import TargetIdentity
 
     target = TargetIdentity(
         "25H2",
@@ -62,8 +62,8 @@ def test_eligibility_does_not_guess_checkpoint_dependencies(
 
 
 def test_driver_package_requires_driver_servicing(november_update: Update) -> None:
-    from win_offline_update.bundle import resolve_plan
-    from win_offline_update.target import TargetIdentity
+    from wuo.bundle import resolve_plan
+    from wuo.target import TargetIdentity
 
     target = TargetIdentity(
         "25H2",

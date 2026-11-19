@@ -9,8 +9,8 @@ BASE = "https://catalog.sf.dl.delivery.mp.microsoft.com/lab/"
 
 
 def test_download_does_not_follow_off_host_redirect(tmp_path: Path) -> None:
-    from win_offline_update.downloads import DownloadError, download
-    from win_offline_update.models import Update, UpdateFile
+    from wuo.downloads import DownloadError, download
+    from wuo.models import Update, UpdateFile
 
     def respond(request: httpx.Request) -> httpx.Response:
         assert request.url.host == "catalog.sf.dl.delivery.mp.microsoft.com"
@@ -34,8 +34,8 @@ def test_download_does_not_follow_off_host_redirect(tmp_path: Path) -> None:
 
 
 def test_download_saves_all_verified_packages(tmp_path: Path) -> None:
-    from win_offline_update.downloads import download
-    from win_offline_update.models import Update, UpdateFile
+    from wuo.downloads import download
+    from wuo.models import Update, UpdateFile
 
     def respond(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, content=request.url.path.encode("ascii"))
@@ -60,8 +60,8 @@ def test_download_saves_all_verified_packages(tmp_path: Path) -> None:
 
 
 def test_short_response_leaves_no_manifest(tmp_path: Path) -> None:
-    from win_offline_update.downloads import DownloadError, download
-    from win_offline_update.models import Update, UpdateFile
+    from wuo.downloads import DownloadError, download
+    from wuo.models import Update, UpdateFile
 
     async def run() -> None:
         transport = httpx.MockTransport(
@@ -86,8 +86,8 @@ def test_short_response_leaves_no_manifest(tmp_path: Path) -> None:
 
 
 def test_lengthless_digestless_response_leaves_no_manifest(tmp_path: Path) -> None:
-    from win_offline_update.downloads import DownloadError, download
-    from win_offline_update.models import Update, UpdateFile
+    from wuo.downloads import DownloadError, download
+    from wuo.models import Update, UpdateFile
 
     async def run() -> None:
         transport = httpx.MockTransport(

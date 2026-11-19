@@ -409,7 +409,7 @@ class Menu:
                 self._save_selection(selected.path)
             print("Saved hooks for future update jobs.")
             return
-        resources = files("win_offline_update")
+        resources = files("wuo")
         with ExitStack() as workspace:
             script = workspace.enter_context(
                 as_file(resources.joinpath("winre_setup.ps1"))

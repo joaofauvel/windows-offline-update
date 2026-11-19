@@ -216,7 +216,7 @@ def _invoke(
     powershell = target.windows / "System32/WindowsPowerShell/v1.0/powershell.exe"
     with ExitStack() as context:
         script = context.enter_context(
-            as_file(files("win_offline_update").joinpath("windows_updates.ps1"))
+            as_file(files("wuo").joinpath("windows_updates.ps1"))
         )
         if request["mode"] == "install":
             context.enter_context(
