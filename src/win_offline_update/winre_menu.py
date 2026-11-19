@@ -354,7 +354,9 @@ class Menu:
         with self._lock():
             self._require_windows_complete_locked()
             pending = self._pending_id()
-        print("In recovery, select Troubleshoot > Windows Offline Update.")
+        print(
+            "In recovery, select Troubleshoot > wuo (Windows Offline Update on older installations)."
+        )
         if not sys.stdin.isatty():
             print("Run wuo update in an administrator terminal when ready to restart.")
             return

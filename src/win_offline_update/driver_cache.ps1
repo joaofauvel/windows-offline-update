@@ -12,7 +12,7 @@ if (!$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 $id = [guid]$request.update_id
 $revision = [int]$request.update_revision
 $session = New-Object -ComObject Microsoft.Update.Session
-$session.ClientApplicationID = 'Windows Offline Update'
+$session.ClientApplicationID = 'wuo'
 $searcher = $session.CreateUpdateSearcher()
 $searcher.Online = $true
 $result = $searcher.Search("UpdateID='$id' and RevisionNumber=$revision and Type='Driver' and IsInstalled=0 and IsHidden=0")

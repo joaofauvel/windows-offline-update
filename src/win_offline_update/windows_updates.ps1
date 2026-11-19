@@ -200,7 +200,7 @@ function Invoke-WindowsSecurityUpdates {
     }
     Write-SecurityJournal $journalValue $JournalPath
     $session = New-WuaSession
-    $session.ClientApplicationID = 'Windows Offline Update security'
+    $session.ClientApplicationID = 'wuo security'
     $searcher = $session.CreateUpdateSearcher()
     $searcher.Online = $inputRequest.mode -eq 'install'
 

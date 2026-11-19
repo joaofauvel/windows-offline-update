@@ -18,7 +18,8 @@ $system = 'S-1-5-18'
 $trustedInstaller = 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'
 $toolPath = 'WUO\cmd.exe'
 $toolArguments = '/d /c X:\Sources\Recovery\Tools\WUO\launcher.cmd'
-$toolName = 'Windows Offline Update'
+$toolName = 'wuo'
+$legacyToolName = 'Windows Offline Update'
 $toolDescription = 'Apply a staged update job'
 $utf8 = [Text.UTF8Encoding]::new($false)
 $ascii = [Text.Encoding]::ASCII
@@ -374,7 +375,7 @@ function Assert-OwnedBootShell([string]$Path) {
     $xml = [xml][IO.File]::ReadAllText($Path)
     $labels = @($xml.SelectNodes('/BootShell/WinRETool'))
     if (!$labels.Count -or @($labels | Where-Object {
-        $_.Name -cne $toolName -or $_.Description -cne $toolDescription
+        $_.Name -cnotin $toolName, $legacyToolName -or $_.Description -cne $toolDescription
     }).Count) {
         throw 'The registered custom recovery tool label belongs to another tool.'
     }
@@ -386,7 +387,7 @@ function Save-ExistingBootShell($Registration, [string]$Destination) {
         throw 'WinRE has an existing custom recovery tool label.'
     }
     if ($Registration.OemTool -and !$paths.Count) {
-        throw 'The registered Windows Offline Update recovery tool label could not be found.'
+        throw 'The registered wuo recovery tool label could not be found.'
     }
     foreach ($path in $paths) { Assert-OwnedBootShell $path }
     if ($paths.Count) { [IO.File]::Copy($paths[0], $Destination) }
@@ -509,7 +510,7 @@ try {
             throw 'The recovery menu configuration already exists. Remove the existing installation before setting up again.'
         }
         if ($Action -eq 'uninstall' -and (!$hasMarker -or [IO.File]::ReadAllText($marker).Trim() -ine $machine)) {
-            throw 'No Windows Offline Update recovery menu is installed for this Windows installation.'
+            throw 'No wuo recovery menu is installed for this Windows installation.'
         }
 
         $original = Read-RecoveryRegistration

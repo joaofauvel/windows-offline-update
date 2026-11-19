@@ -57,9 +57,7 @@ def test_bundled_official_hooks_are_available_without_registry(tmp_path: Path) -
 
     assert official.origin.name == "official/usb4"
     assert official.origin.source == "official"
-    assert official.origin.location == (
-        "https://github.com/joaofauvel/windows-offline-update.git"
-    )
+    assert official.origin.location == ("https://github.com/joaofauvel/wuo.git")
     assert official.origin.sha256 == hashlib.sha256(official.content).hexdigest()
     assert official.origin.revision
     assert [item.origin.name for item in registry.list_profiles()] == ["official/usb4"]
@@ -487,6 +485,30 @@ def test_official_overlay_cannot_redirect_the_fixed_repository(
 
     with pytest.raises(ValueError, match="official|reserved"):
         registry.get("official/example")
+
+
+def test_official_profile_cached_before_repo_rename_remains_usable(
+    repository: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import win_offline_update.hook_registry as module
+
+    root = tmp_path / "registry"
+    registry = module.HookRegistry(root)
+    monkeypatch.setattr(module, "OFFICIAL_REPOSITORY", str(repository))
+    original = registry.refresh("official")[0]
+    manifest = root / "registry.json"
+    data = json.loads(manifest.read_text())
+    legacy = "https://github.com/joaofauvel/windows-offline-update.git"
+    data["sources"]["official"]["repo"] = legacy
+    manifest.write_text(json.dumps(data))
+    monkeypatch.setattr(
+        module, "OFFICIAL_REPOSITORY", "https://github.com/joaofauvel/wuo.git"
+    )
+
+    cached = registry.get("official/example")
+    assert cached.origin.location == legacy
+    assert cached.origin.revision == original.origin.revision
+    assert cached.content == original.content
 
 
 def test_refresh_can_publish_profile_removal_without_reusing_bundled_data(

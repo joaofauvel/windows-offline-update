@@ -203,7 +203,7 @@ goto cleanup
 echo Cannot locate or mount the configured EFI volume.
 goto cleanup
 :wrong_target
-echo The Windows Offline Update installation marker does not match this launcher.
+echo The wuo installation marker does not match this launcher.
 goto cleanup
 :no_job
 echo There is no offline update staged for this installation.
