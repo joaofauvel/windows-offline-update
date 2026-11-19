@@ -1,0 +1,42 @@
+
+Deployment Image Servicing and Management tool
+Version: 10.0.26100.1
+
+Image Version: 10.0.26200.9974
+
+Package information:
+
+Package Identity : Package_for_RollupFix~31bf3856ad364e35~amd64~~26100.1742.1.10
+Applicable : Yes
+Copyright : Microsoft Corporation
+Company : Microsoft Corporation
+Creation Time : 
+Description : Fix for KB5043080
+Install Client : UpdateAgent
+Install Package Name : Package_for_RollupFix~31bf3856ad364e35~amd64~~26100.1742.1.10.mum
+Install Time : 
+Last Update Time : 
+Name : default
+Product Name : Package_for_RollupFix
+Product Version : 
+Release Type : Security Update
+Restart Required : Possible
+Support Information : https://support.microsoft.com/help/5043080
+State : Staged
+Completely offline capable : Undetermined
+Self servicing package : No
+Capability Identity : 
+
+Custom Properties:
+
+Version : 10.0.26100.1742
+PackageFormat : PSFX
+PSFXVersion : 2
+PSFXDeltaFormat : ForwardOnly
+ExpressType : Baseline
+
+Features listing for package : Package_for_RollupFix~31bf3856ad364e35~amd64~~26100.1742.1.10
+
+(No features found for this package)
+
+The operation completed successfully.

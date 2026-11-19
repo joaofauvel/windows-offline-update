@@ -24,9 +24,13 @@ set "BUNDLE=%~dp0"
 set "JOB=%TARGET%\ProgramData\WinOfflineUpdate\jobs\@@JOB@@"
 set "LOG=%JOB%\recovery.log"
 set "HOOK_HIVE=HKLM\WOU_SYSTEM_@@JOB@@"
+set "RESTORE_POST="
+set "REPAIR_ACTIVE="
+set "HOOKS_STARTED="
+set "FAILURE_PHASE=preflight"
 call :validate_target || goto unverified
-if /i "%MODE%"=="repair-hooks" goto repair
 call :validate_files || goto bad_files
+if /i "%MODE%"=="repair-hooks" goto repair
 if exist "%BUNDLE%hooks-summary.txt" type "%BUNDLE%hooks-summary.txt"
 if /i "%MODE%"=="check" (
     echo Target and package sizes verified. Check made no offline registry or package writes.
@@ -37,9 +41,17 @@ mkdir "%JOB%\apply.started" 2>nul || goto interrupted
 (>>"%LOG%" echo Started offline apply on %TARGET% with EFI %EFI%.) || goto failed
 mkdir "%JOB%\scratch" 2>nul || goto failed
 call :inspect_packages || goto failed
+set "FAILURE_PHASE=pre-hooks"
+(>"%JOB%\hooks.started" echo @@JOB@@) || goto failed
+set "HOOKS_STARTED=@@JOB@@"
+set "RESTORE_POST=1"
 set "PHASE=pre"
 call :pre_hooks || goto failed
+set "FAILURE_PHASE=packages"
 call :apply_packages || goto failed
+set "FAILURE_PHASE=package-state"
+call :verify_package_states || goto failed
+set "FAILURE_PHASE=post-hooks"
 set "PHASE=post"
 call :post_hooks || goto failed
 (>>"%LOG%" echo Offline staging and hooks succeeded. Windows may finish servicing on startup.) || goto failed
@@ -49,15 +61,75 @@ exit /b 0
 
 :repair
 if exist "%BUNDLE%hooks-summary.txt" type "%BUNDLE%hooks-summary.txt"
-set "READY="
-if exist "%JOB%\state.ready" set /p "READY="<"%JOB%\state.ready"
-if /i not "%READY%"=="@@JOB@@" goto interrupted
-mkdir "%JOB%\repair.started" 2>nul || goto interrupted
+call :repair_evidence || goto interrupted
+mkdir "%JOB%\repair.running" 2>nul || goto interrupted
+set "REPAIR_ACTIVE=1"
+set "RESTORE_POST=1"
+set "FAILURE_PHASE=repair-package-state"
+if not exist "%JOB%\state.ready" goto repair_check_packages
+move /y "%JOB%\state.ready" "%JOB%\state.ready-before-failure" >nul || goto failed
+
+:repair_check_packages
+if defined REPAIR_FAILED goto repair_post
+call :verify_package_states || goto failed
+
+:repair_post
 (>>"%LOG%" echo Started post-hook repair on %TARGET%.) || goto failed
-set "PHASE=repair"
-call :post_hooks || goto failed
+set "REPAIR_NUMBER=0"
+
+:select_repair_phase
+set /a REPAIR_NUMBER+=1 >nul
+set "PHASE=repair-%REPAIR_NUMBER%"
+if exist "%JOB%\%PHASE%-SYSTEM.hiv" goto select_repair_phase
+set "RESTORE_POST="
+set "FAILURE_PHASE=repair-post-hooks"
+call :post_hooks || goto repair_hook_failed
+(>"%JOB%\hooks.repaired" echo @@JOB@@) || goto failed
 (>>"%LOG%" echo Post-hook repair verified.) || goto failed
+if defined REPAIR_FAILED goto repair_complete
+(>"%JOB%\state.ready" echo @@JOB@@) || goto failed
+if not exist "%JOB%\state.repair-failed" goto repair_complete
+move /y "%JOB%\state.repair-failed" "%JOB%\state.repair-failed-before-success" >nul || goto failed
+
+:repair_complete
+rmdir "%JOB%\repair.running" || goto failed
+set "REPAIR_ACTIVE="
+if defined REPAIR_FAILED (
+    echo Post-hook repair succeeded; package installation remains failed. Inspect "%LOG%".
+    exit /b 5
+)
 echo Post-hook repair succeeded. Review "%LOG%" and restart when ready.
+exit /b 0
+
+:repair_hook_failed
+(>"%JOB%\hooks.failed" echo @@JOB@@)
+goto failed
+
+:repair_evidence
+set "REPAIR_FAILED="
+if not exist "%JOB%\apply.started\" exit /b 1
+set "HOOKS_STARTED="
+if exist "%JOB%\hooks.started" set /p "HOOKS_STARTED="<"%JOB%\hooks.started"
+if /i not "%HOOKS_STARTED%"=="@@JOB@@" exit /b 1
+if exist "%JOB%\state.failed" goto repair_failed_evidence
+set "READY_PATH=%JOB%\state.ready"
+if exist "%READY_PATH%" goto repair_ready_evidence
+set "REPAIR_RECEIPT="
+if exist "%JOB%\state.repair-failed" set /p "REPAIR_RECEIPT="<"%JOB%\state.repair-failed"
+if /i not "%REPAIR_RECEIPT%"=="@@JOB@@" exit /b 1
+set "READY_PATH=%JOB%\state.ready-before-failure"
+
+:repair_ready_evidence
+set "READY="
+if exist "%READY_PATH%" set /p "READY="<"%READY_PATH%"
+if /i not "%READY%"=="@@JOB@@" exit /b 1
+exit /b 0
+
+:repair_failed_evidence
+set "FAILED_JOB="
+set /p "FAILED_JOB="<"%JOB%\state.failed"
+if /i not "%FAILED_JOB%"=="@@JOB@@" exit /b 1
+set "REPAIR_FAILED=1"
 exit /b 0
 
 :validate_target
@@ -100,10 +172,16 @@ for /f "tokens=1,2,3" %%A in ('X:\Windows\System32\reg.exe query "%PROBE_HIVE%\M
 for /f "tokens=1,2,3" %%A in ('X:\Windows\System32\reg.exe query "%PROBE_HIVE%\Microsoft\Windows NT\CurrentVersion" /v UBR 2^>nul') do if /i "%%A"=="UBR" if /i "%%B"=="REG_DWORD" set "REVISION=%%C"
 "%SYS%\reg.exe" unload "%PROBE_HIVE%" >nul 2>&1 || exit /b 1
 if /i not "%MACHINE%"=="@@MACHINE@@" exit /b 1
+if /i "%MODE%"=="repair-hooks" goto probe_repair
 if not "%BUILD%"=="@@BUILD@@" exit /b 1
 if /i "%REVISION%"=="@@BEFORE@@" exit /b 0
-if /i "%MODE%"=="repair-hooks" if /i "%REVISION%"=="@@AFTER@@" exit /b 0
 exit /b 1
+
+:probe_repair
+rem A prior verified apply may have partially changed build/UBR. Repair only
+rem the captured hooks, with the same machine, BCD target and durable job proof.
+call :repair_evidence || exit /b 1
+exit /b 0
 
 :validate_files
 @@PACKAGES@@
@@ -151,6 +229,26 @@ exit /b 1
 
 :post_hooks
 @@POST_HOOKS@@
+
+:verify_package_states
+@@PACKAGE_STATES@@
+
+:verify_cbs_package
+"%SYS%\dism.exe" /English /Image:%TARGET%\ /SysDriveDir:%EFI%\ /LogPath:"%JOB%\dism.log" /Get-PackageInfo /PackageName:"%CBS_EXPECTED%" >"%CBS_FILE%" 2>&1 || exit /b 1
+set "CBS_ACTUAL="
+set "CBS_STATE="
+for /f "usebackq tokens=1,* delims=:" %%A in ("%CBS_FILE%") do (
+    for /f "tokens=1,2" %%I in ("%%A") do (
+        if /i "%%I %%J"=="Package Identity" for /f "tokens=*" %%V in ("%%B") do set "CBS_ACTUAL=%%V"
+        if /i "%%I"=="State" for /f "tokens=*" %%V in ("%%B") do set "CBS_STATE=%%V"
+    )
+)
+if /i not "%CBS_ACTUAL%"=="%CBS_EXPECTED%" exit /b 1
+if /i "%CBS_STATE%"=="Installed" exit /b 0
+if /i "%CBS_STATE%"=="Install Pending" exit /b 0
+if /i "%CBS_STATE%"=="Superseded" exit /b 0
+>>"%LOG%" echo CBS package did not reach an installed or pending state. Inspect "%CBS_FILE%".
+exit /b 1
 
 :open_hook_hive
 "%SYS%\reg.exe" load "%HOOK_HIVE%" "%TARGET%\Windows\System32\Config\SYSTEM" >>"%LOG%" 2>&1 || exit /b 1
@@ -213,5 +311,36 @@ echo The job is already started or does not have a completed apply record. Inspe
 exit /b 4
 
 :failed
+if /i "%MODE%"=="repair-hooks" goto failed_repair
+(>"%JOB%\state.failed" echo @@JOB@@)
+goto failure_recorded
+
+:failed_repair
+(>"%JOB%\state.repair-failed" echo @@JOB@@)
+
+:failure_recorded
+if exist "%JOB%\state.ready" move /y "%JOB%\state.ready" "%JOB%\state.ready-before-failure" >nul
+(>>"%LOG%" echo Offline job failed during %FAILURE_PHASE%.)
+if not defined RESTORE_POST goto failure_complete
+set "RESTORE_POST="
+set "FAILURE_NUMBER=0"
+
+:select_failure_phase
+set /a FAILURE_NUMBER+=1 >nul
+set "PHASE=failure-%FAILURE_NUMBER%"
+if exist "%JOB%\%PHASE%-SYSTEM.hiv" goto select_failure_phase
+(>>"%LOG%" echo Attempting captured post hooks after failure.)
+call :post_hooks || goto failure_hooks_failed
+(>"%JOB%\hooks.repaired" echo @@JOB@@)
+(>>"%LOG%" echo Post hooks verified after failure; the original job error remains recorded.)
+goto failure_complete
+
+:failure_hooks_failed
+(>"%JOB%\hooks.failed" echo @@JOB@@)
+(>>"%LOG%" echo Post hooks could not be verified. Retry repair-hooks after reviewing the hook error.)
+
+:failure_complete
+if defined REPAIR_ACTIVE rmdir "%JOB%\repair.running" >nul 2>&1
 echo Offline servicing stopped. Inspect "%LOG%" and retain the job backups before deciding whether to reboot.
+if defined HOOKS_STARTED echo To retry only the captured post hooks, run this bundle's recovery.cmd repair-hooks with the same Windows and EFI letters.
 exit /b 5

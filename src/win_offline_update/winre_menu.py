@@ -15,8 +15,10 @@ from uuid import UUID
 from . import bundle
 from .downloads import package_hashes
 from .target import TargetIdentity
+lazy from . import windows_updates
 lazy from .hook_registry import HookRegistry
 lazy from .hook_selection import describe_selection, read_selection, resolve_selection
+lazy from .update import Offer
 
 MENU_PATH = bundle.JOBS_PATH.parent / "menu"
 
@@ -56,6 +58,7 @@ class Menu:
     def __init__(self, target: TargetIdentity) -> None:
         self.target = target
         self.root = target.windows.parent / MENU_PATH
+        self.windows_incomplete = False
 
     @property
     def installed(self) -> bool:
@@ -109,8 +112,24 @@ class Menu:
     def _pending_id(self) -> str | None:
         return _read_id(self.root / "pending.id")
 
+    def _windows_complete_locked(self) -> bool:
+        result = windows_updates.verify(self.target, self.root)
+        self.windows_incomplete = result is not None and not result.complete
+        return not self.windows_incomplete
+
+    def _require_windows_complete_locked(self) -> None:
+        if not self._windows_complete_locked():
+            raise ValueError(
+                "The Windows phase is incomplete. Run wuo status and resolve it before publishing or restarting recovery."
+            )
+
+    def check_windows(self) -> bool:
+        with self._lock():
+            return self._windows_complete_locked()
+
     def publish(self, source: Path) -> Path:
         with self._lock():
+            self._require_windows_complete_locked()
             if self._pending_id() is not None:
                 raise ValueError("An update is already staged. Run wuo status.")
             plan_bytes = (source / "plan.json").read_bytes()
@@ -202,6 +221,7 @@ class Menu:
             return
         self.describe_hooks()
         with self._lock():
+            windows_updates.verify(self.target, self.root)
             job_id = self._pending_id()
             if job_id is None:
                 print("No update staged.")
@@ -223,9 +243,26 @@ class Menu:
 
     def resume(self, *, allow_restart: bool = True) -> bool:
         with self._lock():
+            self.describe_pending_hooks()
+            windows_result = windows_updates.verify(self.target, self.root)
+            self.windows_incomplete = (
+                windows_result is not None and not windows_result.complete
+            )
+            if self.windows_incomplete and not allow_restart:
+                raise ValueError(
+                    "The unfinished Windows phase has captured hooks. Finish it with a plain wuo update before selecting hooks for a new phase."
+                )
+            if windows_result is not None and windows_result.reboot_required:
+                print("Restart Windows to finish the Windows phase before continuing.")
+                return False
             job_id = self._pending_id()
             if job_id is None:
                 return True
+            if self.windows_incomplete:
+                print(
+                    "The Windows phase is incomplete. Resolve it before restarting the staged recovery job."
+                )
+                return False
             self.describe_hooks()
             if self._verify_completed(job_id):
                 (self.root / "pending.id").unlink()
@@ -243,6 +280,24 @@ class Menu:
         self.offer_restart()
         return False
 
+    def install_windows(
+        self, offers: list[Offer], profile: Path | None, *, hooks_explicit: bool = False
+    ) -> windows_updates.WindowsResult:
+        with self._lock():
+            if self._pending_id() is not None:
+                raise ValueError(
+                    "Finish the pending recovery job before installing Windows security updates."
+                )
+            result = windows_updates.install(
+                offers,
+                self.target,
+                self.root,
+                profile=profile,
+                hooks_explicit=hooks_explicit,
+            )
+            self.windows_incomplete = not result.complete
+            return result
+
     def describe_hooks(self, registry: HookRegistry | None = None) -> None:
         if not self.installed:
             print("Saved hooks: none. WinRE menu is not installed.")
@@ -253,6 +308,37 @@ class Menu:
         self.describe_pending_hooks(registry)
 
     def describe_pending_hooks(self, registry: HookRegistry | None = None) -> None:
+        native_journal = self.root / windows_updates.JOURNAL
+        if native_journal.is_file():
+            native = json.loads(native_journal.read_text(encoding="utf-8-sig"))
+            if native.get("phase_complete") is True:
+                print("Previous Windows security phase: completed.")
+            else:
+                captured = native.get("hooks_job_id")
+                print("Pending Windows phase uses these captured hooks")
+                if captured:
+                    job = self.root / "windows-hook-jobs" / _id(captured)
+                    captured_profile = job / "hooks.toml"
+                    receipt = json.loads(
+                        (job / "windows-hooks.json").read_text(encoding="utf-8")
+                    )
+                    if (
+                        receipt.get("profile_sha256") is not None
+                        and not captured_profile.is_file()
+                    ):
+                        raise ValueError(
+                            "The captured Windows hook profile is missing."
+                        )
+                    describe_selection(
+                        read_selection(
+                            captured_profile if captured_profile.is_file() else None
+                        ),
+                        registry,
+                    )
+                else:
+                    print(
+                        "  Captured hook selection is unavailable. Review the native phase journal."
+                    )
         job_id = self._pending_id()
         if job_id is not None:
             pending = self.root / "bundles" / job_id
@@ -265,7 +351,9 @@ class Menu:
             describe_selection(read_selection(profile), registry)
 
     def offer_restart(self) -> None:
-        pending = self._pending_id()
+        with self._lock():
+            self._require_windows_complete_locked()
+            pending = self._pending_id()
         print("In recovery, select Troubleshoot > Windows Offline Update.")
         if not sys.stdin.isatty():
             print("Run wuo update in an administrator terminal when ready to restart.")
@@ -275,6 +363,7 @@ class Menu:
             "yes",
         }:
             with self._lock():
+                self._require_windows_complete_locked()
                 if pending is None or self._pending_id() != pending:
                     raise ValueError("The staged update changed. Run wuo status.")
                 from xml.etree import ElementTree

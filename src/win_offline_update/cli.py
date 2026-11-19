@@ -58,7 +58,7 @@ async def _update(client: httpx.AsyncClient, args: argparse.Namespace) -> int:
     if configured and not args.dry_run:
         allow_restart = not (args.hook or args.profile or args.no_hooks)
         if not await asyncio.to_thread(menu.resume, allow_restart=allow_restart):
-            return 0
+            return 1 if menu.windows_incomplete else 0
     with tempfile.TemporaryDirectory(prefix="wuo-hooks-") as temporary:
         if args.hook or args.profile or args.no_hooks or not menu.installed:
             selected = resolve_selection(args.hook, args.profile, Path(temporary))
@@ -94,33 +94,58 @@ async def _stage_update(
         )
 
     if not configured:
-        return await scan()
+        if getattr(args, "manual", False):
+            return await scan()
+        if args.dry_run:
+            return await scan(PreparedUpdates(output))
+        print(
+            "Windows updates are not installed by this command until setup is complete. Run wuo setup, then wuo update. Use --manual only to download packages for manual installation."
+        )
+        return 1
     if args.dry_run:
         return await scan(PreparedUpdates(menu.root))
 
     with tempfile.TemporaryDirectory(dir=menu.root, prefix="scan-") as temporary:
         prepared = PreparedUpdates(Path(temporary))
         result = await scan(prepared)
+        if prepared.security:
+            installed = await asyncio.to_thread(
+                menu.install_windows,
+                prepared.security,
+                profile,
+                hooks_explicit=bool(
+                    getattr(args, "hook", ())
+                    or getattr(args, "profile", None)
+                    or getattr(args, "no_hooks", False)
+                ),
+            )
+            if not installed.complete:
+                print(
+                    "Recovery servicing has not started. Finish the Windows phase first."
+                )
+                return 1
+        if not await asyncio.to_thread(menu.check_windows):
+            print(
+                "The previous Windows installation phase is still incomplete. Run wuo status and resolve it before entering recovery."
+            )
+            return 1
         if prepared.manual:
             print(f"{len(prepared.manual)} update(s) still require installation.")
             result = 1
         if not prepared.drivers and not prepared.monthly:
             print("No update was staged for WinRE.")
             return result
-        category = "drivers" if prepared.drivers else "monthly"
-        if prepared.drivers and prepared.monthly:
-            if not sys.stdin.isatty():
-                print(
-                    "Run wuo update with --only drivers or --only monthly to stage one job."
-                )
-                return result
-            reply = await asyncio.to_thread(
-                input, "Stage drivers or monthly updates? [drivers/monthly] "
+        category = "monthly" if prepared.monthly else "drivers"
+        remaining = (
+            len(prepared.monthly) - 1 + bool(prepared.drivers)
+            if prepared.monthly
+            else 0
+        )
+        if remaining:
+            print(
+                "Windows packages are serviced before drivers. After this restart, "
+                "run wuo update again to rescan and continue the remaining updates."
             )
-            category = reply.strip().lower()
-            if category not in {"drivers", "monthly"}:
-                print("No update was staged.")
-                return result
 
         current = await asyncio.to_thread(target.read_target)
         if replace(current, loader_guid=identity.loader_guid) != identity:
@@ -136,7 +161,7 @@ async def _stage_update(
                 profile=profile,
             )
         else:
-            (source,) = prepared.monthly
+            source = prepared.monthly[0]
         await asyncio.to_thread(menu.publish, source)
 
     print("Update staged.")
@@ -301,7 +326,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     workflow.add_argument(
         "--dry-run",
         action="store_true",
-        help="Show what would be downloaded.",
+        help="Preview planned installation and recovery servicing without making changes.",
     )
     workflow.add_argument(
         "--driver-cache",

@@ -12,6 +12,8 @@ from win_offline_update.hooks import Hook
 from win_offline_update.models import Update
 from win_offline_update.target import TargetIdentity
 
+type RecoveryLab = tuple[Callable[..., subprocess.CompletedProcess[str]], Path, Path]
+
 
 @pytest.fixture
 def plan(request: pytest.FixtureRequest) -> BundlePlan:
@@ -50,6 +52,20 @@ def plan(request: pytest.FixtureRequest) -> BundlePlan:
             ),
             size={inf: 15, "packages/0001/example.cat": 20},
             kind="drivers",
+        )
+    if getattr(request, "param", None) == "packages-with-pre":
+        return replace(
+            cumulative,
+            commands=("packages/target.msu",),
+            hooks=(
+                Hook("pre", r"Services\Example", "Start", 2),
+                Hook("post", r"Services\Example", "Start", 0),
+            ),
+            size={"packages/target.msu": 20},
+            kind="packages",
+            package_identities=(
+                "Package_for_Test~31bf3856ad364e35~amd64~~10.0.12345.2",
+            ),
         )
     return cumulative
 
@@ -219,7 +235,7 @@ def recovery_lab(
 
 
 def test_cmd_apply_handles_restart_required_and_repairs_only_hooks(
-    recovery_lab,
+    recovery_lab: RecoveryLab,
 ) -> None:
     run, job, trace = recovery_lab
     result = run("apply")
@@ -234,7 +250,7 @@ def test_cmd_apply_handles_restart_required_and_repairs_only_hooks(
     assert trace.read_text().count("/Add-Package") == 2
 
 
-def test_cmd_wrong_efi_cannot_apply(recovery_lab) -> None:
+def test_cmd_wrong_efi_cannot_apply(recovery_lab: RecoveryLab) -> None:
     run, job, trace = recovery_lab
     result = run("apply", WOU_TEST_BAD_EFI="1")
     assert result.returncode == 3
@@ -242,7 +258,9 @@ def test_cmd_wrong_efi_cannot_apply(recovery_lab) -> None:
     assert "/Add-Package" not in trace.read_text()
 
 
-def test_cmd_failed_dism_is_journaled_and_requires_inspection(recovery_lab) -> None:
+def test_cmd_failed_dism_is_journaled_and_requires_inspection(
+    recovery_lab: RecoveryLab,
+) -> None:
     run, job, trace = recovery_lab
     result = run("apply", WOU_TEST_DISM_STATUS="5")
     assert result.returncode == 5
@@ -253,7 +271,7 @@ def test_cmd_failed_dism_is_journaled_and_requires_inspection(recovery_lab) -> N
     assert trace.read_text().count("/Add-Package") == 1
 
 
-def test_cmd_failed_hook_unloads_system_hive(recovery_lab) -> None:
+def test_cmd_failed_hook_unloads_system_hive(recovery_lab: RecoveryLab) -> None:
     run, job, trace = recovery_lab
     result = run("apply", WOU_TEST_HOOK_ERROR="1")
     assert result.returncode == 5
@@ -261,9 +279,158 @@ def test_cmd_failed_hook_unloads_system_hive(recovery_lab) -> None:
     assert not (job / "state.ready").exists()
 
 
-def test_cmd_pending_packages_prevent_writes(recovery_lab) -> None:
+def test_cmd_pending_packages_prevent_writes(recovery_lab: RecoveryLab) -> None:
     run, job, trace = recovery_lab
     result = run("apply", WOU_TEST_PENDING="1")
     assert result.returncode == 5
     assert "Existing pending servicing" in (job / "recovery.log").read_text()
     assert "/Add-Package" not in trace.read_text()
+
+
+@pytest.mark.parametrize("plan", ["packages-with-pre"], indirect=True)
+@pytest.mark.parametrize("failure", ["pre", "dism", "state"])
+def test_failed_apply_restores_post_hooks_without_claiming_ready(
+    recovery_lab: tuple[Callable[..., subprocess.CompletedProcess[str]], Path, Path],
+    plan: BundlePlan,
+    failure: str,
+) -> None:
+    run, job, trace = recovery_lab
+    settings = {
+        "pre": {"WOU_TEST_PRE_ERROR": "1"},
+        "dism": {"WOU_TEST_DISM_STATUS": "5", "WOU_TEST_DISM_HOOK_VALUE": "0x3"},
+        "state": {
+            "WOU_TEST_PACKAGE_STATE": "Staged",
+            "WOU_TEST_DISM_HOOK_VALUE": "0x3",
+        },
+    }[failure]
+    result = run("apply", **settings)
+    assert result.returncode == 5, result.stdout + result.stderr
+    assert trace.with_suffix(".txt.value").read_text() == "0x0"
+    assert (job / "state.failed").read_text().strip() == plan.id
+    assert (job / "hooks.started").read_text().strip() == plan.id
+    assert (job / "hooks.repaired").read_text().strip() == plan.id
+    assert not (job / "state.ready").exists()
+    assert len(list(job.glob("failure-*-SYSTEM.hiv"))) == 1
+    assert (
+        "/Add-Package" in trace.read_text()
+        if failure != "pre"
+        else "/Add-Package" not in trace.read_text()
+    )
+    assert "restart when ready" not in result.stdout
+
+
+@pytest.mark.parametrize("plan", ["packages-with-pre"], indirect=True)
+def test_failed_post_restore_can_be_retried_after_partial_enablement(
+    recovery_lab: tuple[Callable[..., subprocess.CompletedProcess[str]], Path, Path],
+    plan: BundlePlan,
+) -> None:
+    run, job, trace = recovery_lab
+    result = run(
+        "apply",
+        WOU_TEST_DISM_STATUS="5",
+        WOU_TEST_DISM_HOOK_VALUE="0x3",
+        WOU_TEST_POST_ERROR="1",
+    )
+    assert result.returncode == 5
+    assert trace.with_suffix(".txt.value").read_text() == "0x3"
+    assert (job / "hooks.failed").read_text().strip() == plan.id
+    assert not (job / "state.ready").exists()
+    result = run(
+        "repair-hooks",
+        WOU_TEST_BUILD="32000",
+        WOU_TEST_REVISION="0x1",
+        WOU_TEST_PACKAGE_STATE="Staged",
+        WOU_TEST_POST_ERROR="1",
+    )
+    assert result.returncode == 5
+    assert not (job / "repair.running").exists()
+    result = run(
+        "repair-hooks",
+        WOU_TEST_BUILD="32000",
+        WOU_TEST_REVISION="0x1",
+        WOU_TEST_PACKAGE_STATE="Staged",
+    )
+    assert result.returncode == 5, result.stdout + result.stderr
+    assert "package installation remains failed" in result.stdout
+    assert trace.with_suffix(".txt.value").read_text() == "0x0"
+    assert trace.read_text().count("/Add-Package") == 1
+    assert len(list(job.glob("repair-*-SYSTEM.hiv"))) == 2
+    assert (job / "state.failed").read_text().strip() == plan.id
+    assert not (job / "state.ready").exists()
+    assert not (job / "repair.running").exists()
+
+
+@pytest.mark.parametrize("plan", ["packages-with-pre"], indirect=True)
+@pytest.mark.parametrize(
+    "transient_error", ["WOU_TEST_POST_ERROR", "WOU_TEST_SAVE_ERROR"]
+)
+def test_successful_package_job_can_recover_from_transient_repair_failure(
+    recovery_lab: RecoveryLab,
+    plan: BundlePlan,
+    transient_error: str,
+) -> None:
+    run, job, trace = recovery_lab
+    assert run("apply").returncode == 0
+    assert (job / "state.ready").read_text().strip() == plan.id
+    # Retain an existing phase backup; retries must choose an unused name.
+    (job / "repair-1-SYSTEM.hiv").write_text("prior backup")
+    # Simulate a service value needing repair after startup, in the stub only.
+    trace.with_suffix(".txt.value").write_text("0x3")
+    result = run("repair-hooks", **{transient_error: "1"})
+    assert result.returncode == 5
+    assert not (job / "state.ready").exists()
+    assert not (job / "state.failed").exists()
+    assert (job / "state.repair-failed").read_text().strip() == plan.id
+    assert (job / "state.ready-before-failure").read_text().strip() == plan.id
+    assert not (job / "repair.running").exists()
+
+    # A previously successful package outcome is proof to retry, not permission
+    # to skip a fresh CBS state check or claim completion while still staged.
+    result = run("repair-hooks", WOU_TEST_PACKAGE_STATE="Staged")
+    assert result.returncode == 5
+    assert not (job / "state.ready").exists()
+    assert not (job / "state.failed").exists()
+    assert not (job / "repair.running").exists()
+
+    result = run("repair-hooks")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (job / "state.ready").read_text().strip() == plan.id
+    assert not (job / "state.failed").exists()
+    assert not (job / "state.repair-failed").exists()
+    assert (job / "state.repair-failed-before-success").read_text().strip() == plan.id
+    assert not (job / "repair.running").exists()
+    assert trace.with_suffix(".txt.value").read_text() == "0x0"
+    assert (job / "repair-1-SYSTEM.hiv").read_text() == "prior backup"
+    assert trace.read_text().count("/Get-PackageInfo") == 4
+    assert trace.read_text().count("/Add-Package") == 1
+    assert "wpeutil" not in trace.read_text().casefold()
+    assert "shutdown" not in trace.read_text().casefold()
+
+
+@pytest.mark.parametrize("plan", ["packages-with-pre"], indirect=True)
+def test_repair_validates_inventory_before_writing_hooks(
+    recovery_lab: tuple[Callable[..., subprocess.CompletedProcess[str]], Path, Path],
+    tmp_path: Path,
+) -> None:
+    run, job, trace = recovery_lab
+    assert run("apply", WOU_TEST_POST_ERROR="1").returncode == 5
+    (tmp_path / "bundle/packages/target.msu").write_bytes(b"changed size")
+    before = trace.read_text().count("reg add ")
+    result = run("repair-hooks")
+    assert result.returncode == 3
+    assert trace.read_text().count("reg add ") == before
+    assert not list(job.glob("repair-*-SYSTEM.hiv"))
+
+
+@pytest.mark.parametrize("plan", ["packages-with-pre"], indirect=True)
+def test_forged_ready_without_started_job_cannot_bypass_baseline_for_repair(
+    recovery_lab: tuple[Callable[..., subprocess.CompletedProcess[str]], Path, Path],
+    plan: BundlePlan,
+) -> None:
+    run, job, trace = recovery_lab
+    (job / "state.ready").write_text(plan.id)
+    (job / "state.failed").write_text(plan.id)
+    result = run("repair-hooks", WOU_TEST_BUILD="32000")
+    assert result.returncode in {3, 4}
+    assert "reg save " not in trace.read_text()
+    assert "reg add " not in trace.read_text()
