@@ -18,6 +18,12 @@ MACHINE = "11111111-1111-1111-1111-111111111111"
 LOADER = "22222222-2222-2222-2222-222222222222"
 IDENTITY = "Package_for_DotNetRollup~31bf3856ad364e35~amd64~~10.0.12345.2"
 OLDER_IDENTITY = IDENTITY.removesuffix("2") + "1"
+CHECKPOINT_SSU = (
+    "Package_for_ServicingStack_1738~31bf3856ad364e35~amd64~~26100.1738.1.3"
+)
+CHECKPOINT_MAIN = "Package_for_RollupFix~31bf3856ad364e35~amd64~~26100.1742.1.10"
+TARGET_SSU = "Package_for_ServicingStack_9971~31bf3856ad364e35~amd64~~26100.9971.1.11"
+TARGET_MAIN = "Package_for_RollupFix~31bf3856ad364e35~amd64~~26100.9974.1.23"
 PAYLOAD = b"verified Microsoft payload"
 MUM = (
     b'<assembly xmlns="urn:schemas-microsoft-com:asm.v3" manifestVersion="1.0">'
@@ -259,11 +265,209 @@ def test_checkpoint_chain_calls_target_msu_with_all_originals_beside_it(
 ) -> None:
     result = prepare(tmp_path, "checkpoint.msu", "quality.msu")
     assert result.commands == ("packages/quality.msu",)
-    assert set(result.package_identities) == {IDENTITY, OLDER_IDENTITY}
+    assert result.package_identities == (IDENTITY,)
+    assert set(result.package_payload_identities) == {IDENTITY, OLDER_IDENTITY}
     assert {p.name for p in (tmp_path / "recovery/packages").iterdir()} == {
         "checkpoint.msu",
         "quality.msu",
     }
+
+
+@pytest.fixture
+def checkpoint_payloads(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Canonical identities observed in the clean 26200.6584 native VM prepare.
+    payloads = {
+        "checkpoint.msu": (CHECKPOINT_SSU, CHECKPOINT_MAIN),
+        "quality.msu": (TARGET_SSU, TARGET_MAIN),
+        "servicing-stack.msu": (TARGET_SSU,),
+        "dotnet.msu": (IDENTITY,),
+    }
+
+    def inspect(
+        path: Path, _target: TargetIdentity, _scratch: Path, _extractor: str
+    ) -> tuple[str, ...]:
+        return payloads[path.name]
+
+    monkeypatch.setattr(bundle, "_msu_identities", inspect)
+
+
+def test_checkpoint_dependency_metadata_is_audited_without_requiring_registration(
+    tmp_path: Path, checkpoint_payloads: None
+) -> None:
+    result = prepare(tmp_path, "checkpoint.msu", "quality.msu")
+    assert result.package_identities == (TARGET_MAIN,)
+    assert result.package_payload_identities == (
+        CHECKPOINT_SSU,
+        CHECKPOINT_MAIN,
+        TARGET_SSU,
+        TARGET_MAIN,
+    )
+    assert result.commands == ("packages/quality.msu",)
+    manifest = json.loads((tmp_path / "recovery/plan.json").read_text())
+    assert manifest["package_payload_identities"] == list(
+        result.package_payload_identities
+    )
+    assert {p.name for p in (tmp_path / "recovery/packages").iterdir()} == {
+        "checkpoint.msu",
+        "quality.msu",
+    }
+
+
+def test_single_combined_msu_requires_its_main_package(
+    tmp_path: Path, checkpoint_payloads: None
+) -> None:
+    result = prepare(tmp_path, "quality.msu")
+    assert result.package_identities == (TARGET_MAIN,)
+    assert result.package_payload_identities == (TARGET_SSU, TARGET_MAIN)
+
+
+def test_ssu_only_target_still_requires_its_own_package(
+    tmp_path: Path, checkpoint_payloads: None
+) -> None:
+    result = prepare(tmp_path, "servicing-stack.msu")
+    assert result.package_identities == (TARGET_SSU,)
+    assert result.package_payload_identities == (TARGET_SSU,)
+
+
+def test_independent_msu_payloads_still_require_explicit_order(
+    tmp_path: Path, checkpoint_payloads: None
+) -> None:
+    with pytest.raises(ValueError, match="independent"):
+        prepare(tmp_path, "quality.msu", "dotnet.msu")
+    assert not (tmp_path / "recovery").exists()
+
+
+def test_postboot_requires_target_main_and_does_not_query_dependency_registration(
+    tmp_path: Path,
+    checkpoint_payloads: None,
+    native_tools: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = prepare(tmp_path, "checkpoint.msu", "quality.msu")
+    monkeypatch.setattr(bundle, "read_target", lambda **_: target(tmp_path))
+    job = tmp_path / bundle.JOBS_PATH / result.id
+    (job / "state.ready").write_text(result.id)
+    native_tools["identity"] = TARGET_MAIN
+    native_tools["state"] = "Installed"
+    bundle.verify(tmp_path / "recovery", post_boot=True)
+    commands = native_tools["commands"]
+    assert isinstance(commands, list)
+    queried = [
+        arg
+        for command in commands
+        for arg in command
+        if arg.startswith("/PackageName:")
+    ]
+    assert queried == [f"/PackageName:{TARGET_MAIN}"]
+    native_tools["state"] = "Not Present"
+    with pytest.raises(ValueError, match="not verified"):
+        bundle.verify(tmp_path / "recovery", post_boot=True)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Runs isolated Windows CMD output replay")
+@pytest.mark.parametrize("target_state", ["Installed", "Install Pending", None])
+def test_native_checkpoint_stdout_requires_only_selected_target_main(
+    tmp_path: Path,
+    checkpoint_payloads: None,
+    target_state: str | None,
+) -> None:
+    result = prepare(tmp_path, "checkpoint.msu", "quality.msu")
+    fixtures = Path(__file__).with_name("fixtures")
+    responses = {
+        CHECKPOINT_SSU: fixtures / "dism-generic-checkpoint-ssu-invalid.txt",
+        CHECKPOINT_MAIN: fixtures / "dism-generic-checkpoint-main-staged.txt",
+        TARGET_SSU: fixtures / "dism-generic-target-ssu-installed.txt",
+        TARGET_MAIN: fixtures / "dism-generic-target-main-installed.txt",
+    }
+    # The captured VM target is Installed. Also exercise the supported pending
+    # transition and a simulated missing target using the captured error format.
+    target_response = tmp_path / "target-response.txt"
+    if target_state is None:
+        text = (
+            responses[CHECKPOINT_SSU].read_text().replace(CHECKPOINT_SSU, TARGET_MAIN)
+        )
+    else:
+        text = (
+            responses[TARGET_MAIN]
+            .read_text()
+            .replace("State : Installed", f"State : {target_state}")
+        )
+    target_response.write_text(text, encoding="ascii")
+    responses[TARGET_MAIN] = target_response
+    probe = tmp_path / "state-probe"
+    probe.mkdir()
+    trace = probe / "queries.txt"
+    stub = [
+        "@echo off",
+        'set "QUERY=%~6"',
+        'set "QUERY=%QUERY:"=%"',
+        f'>>"{trace}" echo %QUERY%',
+    ]
+    for identity, response in responses.items():
+        status = (
+            -2146498555
+            if identity == CHECKPOINT_SSU
+            or (identity == TARGET_MAIN and target_state is None)
+            else 0
+        )
+        stub.extend(
+            (
+                f'if /i "%QUERY%"=="/PackageName:{identity}" (',
+                f'    type "{response}"',
+                f"    exit /b {status}",
+                ")",
+            )
+        )
+    stub.append("exit /b 87")
+    (probe / "dism.cmd").write_text("\n".join(stub), encoding="ascii")
+
+    def run(plan: bundle.BundlePlan) -> tuple[int, list[str]]:
+        routines = (
+            render_runner(plan)
+            .split("\r\n:verify_package_states\r\n", 1)[1]
+            .split("\r\n:open_hook_hive\r\n", 1)[0]
+            .replace('"%SYS%\\dism.exe"', 'call "%SYS%\\dism.cmd"')
+        )
+        script = probe / "check.cmd"
+        script.write_text(
+            "@echo off\nsetlocal EnableExtensions DisableDelayedExpansion\n"
+            f'set "SYS={probe}"\nset "JOB={probe}"\nset "LOG={probe / "check.log"}"\n'
+            "set TARGET=R:\nset EFI=S:\n"
+            "call :verify_package_states\nexit /b %errorlevel%\n"
+            ":verify_package_states\n" + routines,
+            encoding="ascii",
+        )
+        trace.write_text("")
+        completed = subprocess.run(
+            [
+                str(Path(os.environ["SYSTEMROOT"]) / "System32/cmd.exe"),
+                "/d",
+                "/c",
+                str(script),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return completed.returncode, trace.read_text().splitlines()
+
+    # Replay the original inventory failure and the independently staged
+    # checkpoint root: strict verification must keep rejecting both as targets.
+    code, queries = run(
+        replace(result, package_identities=result.package_payload_identities)
+    )
+    assert code == 1
+    assert queries == [f"/PackageName:{CHECKPOINT_SSU}"]
+    assert "Error: 0x800f0805" in (probe / "packages-after-0001.txt").read_text()
+    code, queries = run(
+        replace(result, package_identities=(CHECKPOINT_MAIN, TARGET_MAIN))
+    )
+    assert code == 1
+    assert queries == [f"/PackageName:{CHECKPOINT_MAIN}"]
+    assert "State : Staged" in (probe / "packages-after-0001.txt").read_text()
+    code, queries = run(result)
+    assert code == (1 if target_state is None else 0)
+    assert queries == [f"/PackageName:{TARGET_MAIN}"]
 
 
 @pytest.mark.parametrize("state", ["unknown state", "Installed & echo unexpected"])

@@ -52,6 +52,7 @@ class BundlePlan:
     size: dict[str, int]
     kind: Literal["cumulative", "drivers", "packages"] = "cumulative"
     package_identities: tuple[str, ...] = ()
+    package_payload_identities: tuple[str, ...] = ()
 
 
 def resolve_plan(update: Update, target: TargetIdentity) -> ServicingPlan:
@@ -319,7 +320,7 @@ def _inspect_packages(
     staging: Path,
     scratch: Path,
     extractor: str,
-) -> tuple[tuple[str, ...], tuple[str, ...]]:
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
     """Identify each complete payload; DISM orders checkpoint MSUs at apply time."""
     inventory: list[tuple[str, tuple[str, ...]]] = []
     for index, file in enumerate(plan.files):
@@ -376,7 +377,20 @@ def _inspect_packages(
         commands = (inventory[-1][0],)
     else:
         commands = (inventory[0][0],)
-    return commands, identities
+    # A checkpoint or combined MSU can carry dependency packages which DISM
+    # legitimately skips when a newer dependency already satisfies the image.
+    # Require the selected target's main roots, not registration of every CAB
+    # extracted from all prerequisites. Retain the complete payload audit below.
+    target_identities = inventory[-1][1]
+    required = tuple(
+        identity
+        for identity in target_identities
+        if not identity.split("~", 1)[0]
+        .casefold()
+        .startswith("package_for_servicingstack")
+    )
+    # A standalone servicing-stack update is itself the requested target.
+    return commands, required or target_identities, identities
 
 
 def read_update_id(source: Path) -> str:
@@ -424,7 +438,7 @@ def prepare(
                 raise ValueError(f"Microsoft digest mismatch for {file.name}.")
             paths[relative] = sha256
             sizes[relative] = path.stat().st_size
-        commands, identities = _inspect_packages(
+        commands, identities, payload_identities = _inspect_packages(
             plan, target, bundle, Path(scratch), extractor
         )
         result = BundlePlan(
@@ -438,6 +452,7 @@ def prepare(
             sizes,
             kind="packages",
             package_identities=identities,
+            package_payload_identities=payload_identities,
         )
         _publish_bundle(bundle, output, result, profile)
     return result

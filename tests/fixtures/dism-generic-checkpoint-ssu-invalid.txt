@@ -1,0 +1,17 @@
+
+Deployment Image Servicing and Management tool
+Version: 10.0.26100.1
+
+Image Version: 10.0.26200.9974
+
+The scratch directory size might be insufficient to perform this operation. This can cause unexpected behavior.
+Use the /ScratchDir option to point to a folder with sufficient scratch space. The recommended size is at least 1024 MB.
+
+An error occurred trying to open - Package_for_ServicingStack_1738~31bf3856ad364e35~amd64~~26100.1738.1.3 Error: 0x800f0805
+The specified package is not valid Windows package.
+
+Error: 0x800f0805
+
+The specified package is not valid Windows package.
+
+The DISM log file can be found at C:\ProgramData\WinOfflineUpdate\jobs\6ee0f85c-343e-4659-9e14-aa74ce15fece\dism.log
