@@ -150,8 +150,12 @@ $letter = 90..68 | ForEach-Object { [string][char]$_ } |
     Select-Object -First 1
 New-PSDrive -Name $letter -PSProvider FileSystem -Root $env:WUO_FIXTURE | Out-Null
 function Get-ItemProperty {
-    param($Path)
+    param($Path, $Name, $ErrorAction)
     if ($Path -like '*CurrentVersion') { return @{CurrentBuildNumber=26200; UBR=9457} }
+    if ($Name -eq 'SetupProgress') {
+        if ($env:WUO_TEST_SETUP_BUSY -eq '1') { return @{SetupProgress=0} }
+        return
+    }
     return @{SystemSetupInProgress=0}
 }
 function New-Object { param($ComObject) @{RebootRequired=$false} }
@@ -206,15 +210,20 @@ function Start-Process {
 
 @pytest.mark.skipif(POWERSHELL is None, reason="Windows PowerShell is required")
 @pytest.mark.parametrize(
-    ("arch", "valid_hash", "expected_calls"),
+    ("arch", "valid_hash", "setup_busy", "expected_calls"),
     [
-        ("x64", True, ["mount", "scan", "dismount"]),
-        ("arm64", True, ["mount", "dismount"]),
-        ("x64", False, []),
+        ("x64", True, False, ["mount", "scan", "dismount"]),
+        ("arm64", True, False, ["mount", "dismount"]),
+        ("x64", False, False, []),
+        ("x64", True, True, []),
     ],
 )
 def test_native_check_validates_media_and_only_invokes_scan(
-    tmp_path: Path, arch: str, valid_hash: bool, expected_calls: list[str]
+    tmp_path: Path,
+    arch: str,
+    valid_hash: bool,
+    setup_busy: bool,
+    expected_calls: list[str],
 ) -> None:
     assert POWERSHELL is not None
     fixture = tmp_path / "media"
@@ -247,6 +256,7 @@ def test_native_check_validates_media_and_only_invokes_scan(
             "WUO_FEATURE_SOURCE": "26200.9457",
             "WUO_FEATURE_BUILD": "26300",
             "WUO_FEATURE_ARCH": arch,
+            "WUO_TEST_SETUP_BUSY": str(int(setup_busy)),
         },
         capture_output=True,
         text=True,
@@ -265,4 +275,9 @@ def test_native_check_validates_media_and_only_invokes_scan(
         assert report["build"] == 26300
     else:
         assert result.returncode != 0
-        assert ("one Windows build" if valid_hash else "differs from") in result.stderr
+        expected_error = (
+            "pending Windows"
+            if setup_busy
+            else ("one Windows build" if valid_hash else "differs from")
+        )
+        assert expected_error in result.stderr

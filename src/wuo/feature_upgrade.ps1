@@ -7,8 +7,9 @@ function Assert-WindowsReady {
         throw 'The running Windows build changed during the feature check.'
     }
     $setup = Get-ItemProperty 'HKLM:\SYSTEM\Setup'
+    $progress = Get-ItemProperty 'HKLM:\SYSTEM\Setup\MoSetup\Volatile' -Name SetupProgress -ErrorAction SilentlyContinue
     $systemInfo = New-Object -ComObject Microsoft.Update.SystemInfo
-    if ($setup.SystemSetupInProgress -or $systemInfo.RebootRequired -or
+    if ($setup.SystemSetupInProgress -or $null -ne $progress -or $systemInfo.RebootRequired -or
         (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending')) {
         throw 'Finish the pending Windows installation or restart before checking a feature upgrade.'
     }
