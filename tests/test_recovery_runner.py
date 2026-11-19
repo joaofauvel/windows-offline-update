@@ -7,10 +7,10 @@ from pathlib import Path
 
 import pytest
 
-from win_offline_update.bundle import BundlePlan
-from win_offline_update.hooks import Hook
-from win_offline_update.models import Update
-from win_offline_update.target import TargetIdentity
+from wuo.bundle import BundlePlan
+from wuo.hooks import Hook
+from wuo.models import Update
+from wuo.target import TargetIdentity
 
 type RecoveryLab = tuple[Callable[..., subprocess.CompletedProcess[str]], Path, Path]
 
@@ -74,7 +74,7 @@ def plan(request: pytest.FixtureRequest) -> BundlePlan:
 def test_recovery_runner_refuses_running_windows(
     plan: BundlePlan, tmp_path: Path
 ) -> None:
-    from win_offline_update.recovery import render_runner
+    from wuo.recovery import render_runner
 
     script = tmp_path / "recovery.cmd"
     script.write_bytes(render_runner(plan).encode("ascii"))
@@ -99,7 +99,7 @@ def test_recovery_runner_refuses_running_windows(
 
 
 def test_runner_places_preflight_before_mutating_commands(plan: BundlePlan) -> None:
-    from win_offline_update.recovery import render_runner
+    from wuo.recovery import render_runner
 
     script = render_runner(plan)
     assert script.index("call :validate_target") < script.index("call :apply_packages")
@@ -115,7 +115,7 @@ def test_runner_places_preflight_before_mutating_commands(plan: BundlePlan) -> N
 
 
 def test_repair_uses_post_hooks_without_installing_packages(plan: BundlePlan) -> None:
-    from win_offline_update.recovery import render_runner
+    from wuo.recovery import render_runner
 
     script = render_runner(plan)
     repair = script.split("\r\n:repair\r\n", 1)[1].split("\r\n:validate_target\r\n", 1)[
@@ -153,7 +153,7 @@ def recovery_lab(
 ) -> Iterator[tuple[Callable[..., subprocess.CompletedProcess[str]], Path, Path]]:
     if os.name != "nt":
         pytest.skip("Runs Windows CMD")
-    from win_offline_update.recovery import render_runner
+    from wuo.recovery import render_runner
 
     windows = Path(os.environ["SYSTEMROOT"])
     csc = windows / "Microsoft.NET/Framework64/v4.0.30319/csc.exe"

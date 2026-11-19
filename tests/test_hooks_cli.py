@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from win_offline_update import cli
+from wuo import cli
 
 
 @pytest.mark.parametrize("command", ["setup", "update"])
@@ -40,8 +40,8 @@ def test_update_shows_effective_saved_or_disabled_hooks(
     override: bool,
     manual: bool,
 ) -> None:
-    from win_offline_update import target
-    from win_offline_update.hooks import load_profile
+    from wuo import target
+    from wuo.hooks import load_profile
 
     saved = tmp_path / "saved.toml"
     saved.write_text(

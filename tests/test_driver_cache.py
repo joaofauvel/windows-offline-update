@@ -6,10 +6,10 @@ from pathlib import Path
 import httpx
 import pytest
 
-from win_offline_update import catalog, driver_cache
-from win_offline_update.models import Update, UpdateFile
-from win_offline_update.target import TargetIdentity
-from win_offline_update.update import Offer, parse_offers, run_update
+from wuo import catalog, driver_cache
+from wuo.models import Update, UpdateFile
+from wuo.target import TargetIdentity
+from wuo.update import Offer, parse_offers, run_update
 
 DRIVER_ID = "702e6ed7-4f31-4f3b-9f49-de333467baf8"
 HARDWARE_ID = r"SWC\VEN_MSFT&AUDIO_EFFECTPACK_VOICECLARITY"
@@ -33,7 +33,7 @@ TARGET = TargetIdentity(
 def test_update_cli_driver_cache_default_and_opt_out(
     monkeypatch: pytest.MonkeyPatch, flags: list[str], expected: bool
 ) -> None:
-    from win_offline_update import cli
+    from wuo import cli
 
     async def run(args: Namespace) -> int:
         assert args.driver_cache is expected
@@ -68,13 +68,11 @@ def test_catalog_miss_uses_default_cache_route(
     capsys: pytest.CaptureFixture[str],
     dry_run: bool,
 ) -> None:
-    from win_offline_update.cli import main
+    from wuo.cli import main
 
     assert main(["update", "--help"]) == 0
     assert "--driver-cache" in capsys.readouterr().out
-    monkeypatch.setattr(
-        "win_offline_update.update.scan_offers", lambda _: ([OFFER], None)
-    )
+    monkeypatch.setattr("wuo.update.scan_offers", lambda _: ([OFFER], None))
     called = []
 
     async def export(offer: Offer, identity: TargetIdentity, root: Path) -> Path:
@@ -166,9 +164,7 @@ def test_native_failure_shows_a_single_candidate_for_identical_catalog_packages(
     async def fails(offer: Offer, identity: TargetIdentity, path: Path) -> Path:
         raise ValueError("WUA was unable to export the driver")
 
-    monkeypatch.setattr(
-        "win_offline_update.update.scan_offers", lambda _: ([OFFER], None)
-    )
+    monkeypatch.setattr("wuo.update.scan_offers", lambda _: ([OFFER], None))
     monkeypatch.setattr(catalog, "search", search)
     monkeypatch.setattr(catalog, "show", show)
     monkeypatch.setattr(driver_cache, "export_driver", fails)

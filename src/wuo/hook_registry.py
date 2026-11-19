@@ -23,7 +23,8 @@ from uuid import uuid4
 
 from .hooks import load_profile
 
-OFFICIAL_REPOSITORY = "https://github.com/joaofauvel/windows-offline-update.git"
+OFFICIAL_REPOSITORY = "https://github.com/joaofauvel/wuo.git"
+_LEGACY_OFFICIAL_REPOSITORY = "https://github.com/joaofauvel/windows-offline-update.git"
 MAX_PROFILE_BYTES = 256 * 1024
 MAX_SOURCE_BYTES = 4 * 1024 * 1024
 MAX_PROFILES = 128
@@ -418,7 +419,9 @@ class HookRegistry:
                     raise ValueError("Invalid hook source metadata fields.")
                 _ref(source["ref"])
                 if name == "official" and (
-                    source["repo"] != OFFICIAL_REPOSITORY or source["ref"] != "HEAD"
+                    source["repo"]
+                    not in (OFFICIAL_REPOSITORY, _LEGACY_OFFICIAL_REPOSITORY)
+                    or source["ref"] != "HEAD"
                 ):
                     raise ValueError(
                         "The reserved official hook source has invalid upstream metadata."
@@ -514,7 +517,7 @@ class HookRegistry:
 
     @staticmethod
     def _official() -> list[HookProfile]:
-        bundled = resources.files("win_offline_update").joinpath("bundled_hooks")
+        bundled = resources.files("wuo").joinpath("bundled_hooks")
         if not bundled.is_dir():
             # Source checkouts keep the canonical collection at repository root.
             editable = Path(__file__).resolve().parents[2] / "hooks"

@@ -5,9 +5,9 @@ from pathlib import Path
 import httpx
 import pytest
 
-from win_offline_update import catalog, downloads
-from win_offline_update.models import Update, UpdateFile
-from win_offline_update.target import TargetIdentity
+from wuo import catalog, downloads
+from wuo.models import Update, UpdateFile
+from wuo.target import TargetIdentity
 
 DRIVER = "11111111-1111-1111-1111-111111111111"
 FEATURE = "22222222-2222-2222-2222-222222222222"
@@ -19,14 +19,14 @@ TARGET = TargetIdentity(
 def test_update_help_accepts_the_new_command(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from win_offline_update.cli import main
+    from wuo.cli import main
 
     assert main(["update", "--help"]) == 0
     assert "--only" in capsys.readouterr().out
 
 
 def test_scan_identifies_drivers_and_localized_feature_offers() -> None:
-    from win_offline_update.update import parse_offers
+    from wuo.update import parse_offers
 
     offers, issue = parse_offers(
         '{"status":3,"updates":['
@@ -44,7 +44,7 @@ def test_scan_identifies_drivers_and_localized_feature_offers() -> None:
 def test_update_dry_run_respects_category_filters(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from win_offline_update.update import Offer, run_update
+    from wuo.update import Offer, run_update
 
     def scan(_: TargetIdentity) -> tuple[list[Offer], str | None]:
         return [
@@ -68,7 +68,7 @@ def test_update_dry_run_respects_category_filters(
     def refuse(*_: object, **__: object) -> None:
         pytest.fail("Dry run attempted a download")
 
-    monkeypatch.setattr("win_offline_update.update.scan_offers", scan)
+    monkeypatch.setattr("wuo.update.scan_offers", scan)
     monkeypatch.setattr(catalog, "show", show)
     monkeypatch.setattr(downloads, "download", refuse)
     out = tmp_path / "downloads"
@@ -87,7 +87,7 @@ def test_update_dry_run_respects_category_filters(
 def test_update_processes_all_categories_and_keeps_manual_next_steps(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from win_offline_update.update import Offer, run_update
+    from wuo.update import Offer, run_update
 
     def scan(_: TargetIdentity) -> tuple[list[Offer], str | None]:
         return [
@@ -110,7 +110,7 @@ def test_update_processes_all_categories_and_keeps_manual_next_steps(
             ),
         )
 
-    monkeypatch.setattr("win_offline_update.update.scan_offers", scan)
+    monkeypatch.setattr("wuo.update.scan_offers", scan)
     monkeypatch.setattr(catalog, "show", show)
     transport = httpx.MockTransport(lambda _: httpx.Response(200, content=b"fixture"))
 
@@ -128,7 +128,7 @@ def test_update_processes_all_categories_and_keeps_manual_next_steps(
 def test_driver_hardware_match_is_exact_and_case_insensitive() -> None:
     import json
 
-    from win_offline_update.update import parse_offers
+    from wuo.update import parse_offers
 
     update = {
         "id": DRIVER,
@@ -150,13 +150,11 @@ def test_driver_hardware_match_is_exact_and_case_insensitive() -> None:
 def test_unpublished_driver_reports_hardware_id_and_manufacturer_route(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from win_offline_update.update import Offer, run_update
+    from wuo.update import Offer, run_update
 
     hardware_id = r"PCI\VEN_8086&DEV_1234"
     offer = Offer(DRIVER, "Intel driver (1.2.3.4)", "drivers", hardware_id, True)
-    monkeypatch.setattr(
-        "win_offline_update.update.scan_offers", lambda _: ([offer], None)
-    )
+    monkeypatch.setattr("wuo.update.scan_offers", lambda _: ([offer], None))
 
     async def run() -> int:
         transport = httpx.MockTransport(
@@ -173,7 +171,7 @@ def test_unpublished_driver_reports_hardware_id_and_manufacturer_route(
 
 
 def test_architecture_and_windows_release_checked_before_download() -> None:
-    from win_offline_update.update import Offer, validate_applicability
+    from wuo.update import Offer, validate_applicability
 
     driver = Offer(DRIVER, "Intel driver", "drivers", r"PCI\VEN_8086", True)
     mixed = Update(
@@ -219,7 +217,7 @@ def test_architecture_and_windows_release_checked_before_download() -> None:
 def test_missing_catalog_offer_resolves_only_the_matching_monthly_kb(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from win_offline_update.update import _package, parse_offers
+    from wuo.update import _package, parse_offers
 
     offer = parse_offers(
         '{"status":2,"updates":[{"type":1,'
@@ -269,7 +267,7 @@ def test_missing_catalog_offer_resolves_only_the_matching_monthly_kb(
 
 
 def test_security_platform_uses_the_payload_named_by_the_agent() -> None:
-    from win_offline_update.update import Offer, validate_applicability
+    from wuo.update import Offer, validate_applicability
 
     platform = UpdateFile(
         "securityhealthsetup_a.exe", "https://download.windowsupdate.com/p/a.exe"
@@ -293,7 +291,7 @@ def test_security_platform_uses_the_payload_named_by_the_agent() -> None:
 
 @pytest.mark.parametrize("release", ["1.463.347.0", "1.463.348.0"])
 def test_defender_fallback_proves_the_redirect_version(release: str) -> None:
-    from win_offline_update.update import Offer, _defender_package
+    from wuo.update import Offer, _defender_package
 
     title = (
         "Security Intelligence for Microsoft Defender (KB2267602) (Version 1.463.347.0)"
@@ -319,7 +317,7 @@ def test_defender_fallback_proves_the_redirect_version(release: str) -> None:
 def test_reuse_checks_the_existing_manifest_and_package(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from win_offline_update.update import Offer, run_update
+    from wuo.update import Offer, run_update
 
     offer = Offer(DRIVER, "Intel driver", "drivers", r"PCI\VEN_8086", True)
     standalone = Update(
@@ -330,9 +328,7 @@ def test_reuse_checks_the_existing_manifest_and_package(
             UpdateFile("driver.cab", "https://download.windowsupdate.com/driver.cab"),
         ),
     )
-    monkeypatch.setattr(
-        "win_offline_update.update.scan_offers", lambda _: ([offer], None)
-    )
+    monkeypatch.setattr("wuo.update.scan_offers", lambda _: ([offer], None))
 
     async def show(_: httpx.AsyncClient, __: str) -> Update:
         return standalone

@@ -49,7 +49,7 @@ _SCAN = r"""
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 $session = New-Object -ComObject Microsoft.Update.Session
-$session.ClientApplicationID = 'Windows Offline Update'
+$session.ClientApplicationID = 'wuo'
 $searcher = $session.CreateUpdateSearcher()
 $searcher.Online = $true
 $result = $searcher.Search('IsInstalled=0 and IsHidden=0')

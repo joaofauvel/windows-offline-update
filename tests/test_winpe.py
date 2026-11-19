@@ -9,10 +9,10 @@ from uuid import UUID
 
 import pytest
 
-from win_offline_update.bundle import BundlePlan
-from win_offline_update.hooks import Hook
-from win_offline_update.recovery import render_runner
-from win_offline_update.target import TargetIdentity
+from wuo.bundle import BundlePlan
+from wuo.hooks import Hook
+from wuo.recovery import render_runner
+from wuo.target import TargetIdentity
 
 JOB = "11111111-1111-1111-1111-111111111111"
 OS_PARTITION = "22222222-2222-2222-2222-222222222222"
@@ -54,8 +54,8 @@ def test_driver_runner_keeps_both_hook_phases_for_a_general_profile() -> None:
 def test_winpe_plan_binds_partitions_bundle_hashes_and_check_mode(
     tmp_path: Path,
 ) -> None:
-    from win_offline_update.downloads import package_hashes
-    from win_offline_update.winpe import write_startup
+    from wuo.downloads import package_hashes
+    from wuo.winpe import write_startup
 
     windows = tmp_path / "Windows"
     windows.mkdir()
@@ -165,7 +165,7 @@ def test_winpe_startup_checks_before_running_with_changed_letters(
     if failure == "digest":
         runner.write_text('@echo unexpected>>"%WUO_TEST_TRACE%"\n', encoding="ascii")
 
-    script = files("win_offline_update").joinpath("winpe_startup.ps1").read_text()
+    script = files("wuo").joinpath("winpe_startup.ps1").read_text()
     guard = next(line for line in script.splitlines() if "CurrentControlSet" in line)
     # Use process-local PS drives and simulated storage cmdlets. No disk is remapped.
     script = script.replace(guard, "    if ($false) {")
@@ -268,7 +268,7 @@ Write-Host ('Test letters: ' + $letters[0] + ' ' + $letters[1])
 def test_iso_builder_uses_adk_paths_and_discards_on_component_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from win_offline_update import winpe
+    from wuo import winpe
 
     kits = tmp_path / "Program Files"
     adk = kits / "Windows Kits/10/Assessment and Deployment Kit"

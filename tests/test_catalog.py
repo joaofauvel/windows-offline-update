@@ -6,7 +6,7 @@ FIXTURES = Path(__file__).with_name("fixtures")
 
 
 def test_search_keeps_products_distinct() -> None:
-    from win_offline_update.catalog import parse_search
+    from wuo.catalog import parse_search
 
     results = parse_search((FIXTURES / "catalog-search.html").read_text())
     assert [
@@ -19,7 +19,7 @@ def test_search_keeps_products_distinct() -> None:
 
 
 def test_search_rejects_unrecognized_page() -> None:
-    from win_offline_update.catalog import SourceError, parse_search
+    from wuo.catalog import SourceError, parse_search
 
     with pytest.raises(SourceError, match="search"):
         parse_search("<title>Access denied</title>")
@@ -27,7 +27,7 @@ def test_search_rejects_unrecognized_page() -> None:
 
 
 def test_download_dialog_includes_checkpoint_and_sha256() -> None:
-    from win_offline_update.catalog import parse_files
+    from wuo.catalog import parse_files
 
     files = parse_files((FIXTURES / "catalog-download.html").read_text())
     assert [file.name.split("_")[0] for file in files] == [

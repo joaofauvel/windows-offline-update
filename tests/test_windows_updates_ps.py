@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-SCRIPT = Path(__file__).parents[1] / "src/win_offline_update/windows_updates.ps1"
+SCRIPT = Path(__file__).parents[1] / "src/wuo/windows_updates.ps1"
 POWERSHELL = shutil.which("powershell.exe") or shutil.which("pwsh")
 TARGET = {
     "machine_guid": "test-machine",

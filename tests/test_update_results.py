@@ -7,10 +7,10 @@ from typing import cast
 import httpx
 import pytest
 
-from win_offline_update import cli, update, windows_updates
-from win_offline_update.models import Update, UpdateFile
-from win_offline_update.target import TargetIdentity
-from win_offline_update.winre_menu import Menu
+from wuo import cli, update, windows_updates
+from wuo.models import Update, UpdateFile
+from wuo.target import TargetIdentity
+from wuo.winre_menu import Menu
 
 
 @pytest.fixture(autouse=True)

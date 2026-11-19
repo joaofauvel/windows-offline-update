@@ -6,17 +6,15 @@ from typing import Any
 
 import pytest
 
-from win_offline_update.target import TargetIdentity
-from win_offline_update.update import Offer
+from wuo.target import TargetIdentity
+from wuo.update import Offer
 
 TARGET_ID = "891b0bf2-a1b7-4c3d-8620-14db3a5542fd"
 
 
 @pytest.fixture(autouse=True)
 def no_host_restart_probe(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        "win_offline_update.windows_updates.current_reboot_required", lambda _: False
-    )
+    monkeypatch.setattr("wuo.windows_updates.current_reboot_required", lambda _: False)
 
 
 def offers() -> list[Offer]:
@@ -43,7 +41,7 @@ def offers() -> list[Offer]:
 
 
 def test_security_order_and_exact_scope() -> None:
-    from win_offline_update.windows_updates import eligible, ordered
+    from wuo.windows_updates import eligible, ordered
 
     assert [item.id for item in ordered(offers())] == [
         offers()[2].id,
@@ -69,7 +67,7 @@ def test_security_order_and_exact_scope() -> None:
 def test_result_requires_matching_request_and_each_update_verified(
     tmp_path: Path,
 ) -> None:
-    from win_offline_update.windows_updates import read_result
+    from wuo.windows_updates import read_result
 
     target = TargetIdentity(
         "25H2", 26200, 9974, "x64", tmp_path / "Windows", TARGET_ID, ""
@@ -118,7 +116,7 @@ def test_result_requires_matching_request_and_each_update_verified(
 def test_python_process_boundary_and_captured_hooks_receipt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from win_offline_update import windows_updates
+    from wuo import windows_updates
 
     identity = TargetIdentity(
         "25H2", 26200, 9974, "x64", tmp_path / "Windows", TARGET_ID, ""
@@ -167,7 +165,7 @@ def test_stale_target_fails_before_hooks_or_process_creation(
 ) -> None:
     from dataclasses import replace
 
-    from win_offline_update import windows_updates
+    from wuo import windows_updates
 
     identity = TargetIdentity("25H2", 26200, 9974, "x64", tmp_path, TARGET_ID, "")
     monkeypatch.setattr(
@@ -188,7 +186,7 @@ def test_stale_target_fails_before_hooks_or_process_creation(
 def test_subset_cannot_replace_unresolved_native_rows(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from win_offline_update import windows_updates
+    from wuo import windows_updates
 
     identity = TargetIdentity("25H2", 26200, 9974, "x64", tmp_path, TARGET_ID, "")
     rows = tuple(
@@ -220,7 +218,7 @@ def test_subset_cannot_replace_unresolved_native_rows(
 def test_terminal_native_completion_does_not_rescan_retired_revisions(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from win_offline_update import windows_updates
+    from wuo import windows_updates
 
     identity = TargetIdentity("25H2", 26200, 9974, "x64", tmp_path, TARGET_ID, "")
     record = {
@@ -266,7 +264,7 @@ def test_terminal_native_completion_does_not_rescan_retired_revisions(
 def test_terminal_completion_still_blocks_a_current_global_restart(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from win_offline_update import windows_updates
+    from wuo import windows_updates
 
     target = TargetIdentity("25H2", 26200, 9974, "x64", tmp_path, TARGET_ID, "")
     data = {
@@ -306,7 +304,7 @@ def test_terminal_completion_still_blocks_a_current_global_restart(
 def test_completion_publication_failure_keeps_nonterminal_journal_recoverable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, boundary: str
 ) -> None:
-    from win_offline_update import windows_updates
+    from wuo import windows_updates
 
     target = TargetIdentity("25H2", 26200, 9974, "x64", tmp_path, TARGET_ID, "")
     data = {
@@ -367,8 +365,8 @@ def test_unfinished_retry_reuses_original_one_run_hook_capture(
     future_changed: bool,
     include_new: bool,
 ) -> None:
-    from win_offline_update import windows_hooks, windows_updates
-    from win_offline_update.hook_selection import resolve_selection
+    from wuo import windows_hooks, windows_updates
+    from wuo.hook_selection import resolve_selection
 
     target = TargetIdentity("25H2", 26200, 9974, "x64", tmp_path, TARGET_ID, "")
     selected = resolve_selection(("official/usb4",), None, tmp_path / "one-run")
@@ -422,7 +420,7 @@ def test_unfinished_retry_reuses_original_one_run_hook_capture(
 def test_incomplete_native_retry_rejects_explicit_hook_override(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from win_offline_update import windows_updates
+    from wuo import windows_updates
 
     target = TargetIdentity("25H2", 26200, 9974, "x64", tmp_path, TARGET_ID, "")
     previous = windows_updates.WindowsResult(

@@ -1,4 +1,4 @@
-# Windows Offline Update
+# wuo
 
 `wuo` finds applicable updates through Windows Update Agent. It installs security
 components in Windows and prepares Windows packages and drivers for installation
@@ -34,7 +34,7 @@ wuo setup
 For one-off commands, use `uvx wuo` in place of `wuo`. From a source checkout,
 use `uv run --locked wuo`.
 
-Setup backs up the installed recovery image and adds **Windows Offline Update**
+Setup backs up the installed recovery image and adds **wuo**
 to a copy of it. If setup fails, it attempts to restore the original image and
 registration. If restoration fails, it reports the backup location for manual
 recovery.
@@ -106,8 +106,14 @@ settings.
    in Windows. If Windows requires a restart, restart normally and run the same
    command again. When `wuo` prepares a recovery job, accept the prompt to restart
    into WinRE.
-2. In WinRE, choose **Troubleshoot → Windows Offline Update**. The tool checks
+2. In WinRE, choose **Troubleshoot → wuo**. The tool checks
    and installs the prepared job, then restarts Windows on success.
+
+An existing recovery installation may still show **Windows Offline Update**.
+That entry still works. To change its label, finish any pending job and check
+`wuo status` to make sure your selected profiles are still available and match
+the saved selection. Then run `wuo remove` and repeat `wuo setup` with those
+profiles. Keep the existing entry if you need its saved profile copy.
 
 On a dual-boot PC, select your usual Windows entry after the restart. Run
 `wuo status` in Windows to check the result. Run `wuo update` again after recovery

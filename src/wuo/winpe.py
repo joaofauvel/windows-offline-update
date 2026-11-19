@@ -111,7 +111,7 @@ def write_startup(
             },
         },
     )
-    script = files("win_offline_update").joinpath("winpe_startup.ps1").read_bytes()
+    script = files("wuo").joinpath("winpe_startup.ps1").read_bytes()
     (system32 / "wuo-startup.ps1").write_bytes(script)
     (system32 / "startnet.cmd").write_bytes(
         STARTNET.replace("\n", "\r\n").encode("ascii")

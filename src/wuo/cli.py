@@ -288,9 +288,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         description="Download Windows updates and install supported updates in recovery.",
     )
     commands = parser.add_subparsers(dest="command", metavar="COMMAND")
-    setup = commands.add_parser(
-        "setup", help="Add Windows Offline Update to the recovery menu."
-    )
+    setup = commands.add_parser("setup", help="Add wuo to the recovery menu.")
     setup_hooks = setup.add_mutually_exclusive_group()
     setup_hooks.add_argument(
         "--profile", type=Path, help="Save a local registry-hook profile."
@@ -370,9 +368,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="Clear the pending job and keep its files and logs.",
     )
-    commands.add_parser(
-        "remove", help="Remove Windows Offline Update from the recovery menu."
-    )
+    commands.add_parser("remove", help="Remove wuo from the recovery menu.")
     hook_commands = commands.add_parser(
         "hooks", help="List profiles and manage Git sources."
     )

@@ -3,9 +3,9 @@ from pathlib import Path
 
 import pytest
 
-from win_offline_update import cli
-from win_offline_update.downloads import package_hashes
-from win_offline_update.target import TargetIdentity
+from wuo import cli
+from wuo.downloads import package_hashes
+from wuo.target import TargetIdentity
 
 JOB = "a1bad4cd-52c8-4e0b-bc75-dc24c29e4155"
 OWNER = "9e1379fb-31bc-4c97-b14a-52aed0371c44"
@@ -14,9 +14,7 @@ LOADER = "32df251e-0f11-4e78-8559-23308eb4e23c"
 
 @pytest.fixture(autouse=True)
 def no_host_restart_probe(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        "win_offline_update.windows_updates.current_reboot_required", lambda _: False
-    )
+    monkeypatch.setattr("wuo.windows_updates.current_reboot_required", lambda _: False)
 
 
 def test_main_help_shows_the_routine_commands(
@@ -34,7 +32,7 @@ def test_main_help_shows_the_routine_commands(
 def test_only_a_complete_verified_bundle_is_published(
     tmp_path: Path, corrupt: bool
 ) -> None:
-    from win_offline_update.winre_menu import MENU_PATH, Menu
+    from wuo.winre_menu import MENU_PATH, Menu
 
     identity = TargetIdentity(
         "25H2", 26200, 9974, "x64", tmp_path / "Windows", OWNER, LOADER
@@ -96,7 +94,7 @@ def test_only_a_complete_verified_bundle_is_published(
 
 
 def test_status_leaves_an_interrupted_job_pending(tmp_path: Path) -> None:
-    from win_offline_update.winre_menu import MENU_PATH, Menu
+    from wuo.winre_menu import MENU_PATH, Menu
 
     identity = TargetIdentity(
         "25H2", 26200, 9974, "x64", tmp_path / "Windows", OWNER, LOADER
@@ -118,8 +116,8 @@ def test_status_leaves_an_interrupted_job_pending(tmp_path: Path) -> None:
 def test_setup_can_replace_or_disable_saved_hooks_without_reinstalling_winre(
     tmp_path: Path,
 ) -> None:
-    from win_offline_update.hook_selection import read_selection
-    from win_offline_update.winre_menu import MENU_PATH, Menu
+    from wuo.hook_selection import read_selection
+    from wuo.winre_menu import MENU_PATH, Menu
 
     identity = TargetIdentity(
         "25H2", 26200, 9974, "x64", tmp_path / "Windows", OWNER, LOADER
@@ -150,7 +148,7 @@ def test_setup_can_replace_or_disable_saved_hooks_without_reinstalling_winre(
 def test_setup_displays_pending_hooks_when_saved_selection_is_disabled(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from win_offline_update.winre_menu import MENU_PATH, Menu
+    from wuo.winre_menu import MENU_PATH, Menu
 
     identity = TargetIdentity(
         "25H2", 26200, 9974, "x64", tmp_path / "Windows", OWNER, LOADER
@@ -178,7 +176,7 @@ def test_setup_displays_pending_hooks_when_saved_selection_is_disabled(
 def test_pending_job_cannot_restart_with_conflicting_hook_flags(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from win_offline_update.winre_menu import MENU_PATH, Menu
+    from wuo.winre_menu import MENU_PATH, Menu
 
     identity = TargetIdentity(
         "25H2", 26200, 9974, "x64", tmp_path / "Windows", OWNER, LOADER
@@ -199,8 +197,8 @@ def test_pending_job_cannot_restart_with_conflicting_hook_flags(
 def test_stale_menu_cannot_publish_across_new_native_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from win_offline_update import windows_updates
-    from win_offline_update.winre_menu import MENU_PATH, Menu
+    from wuo import windows_updates
+    from wuo.winre_menu import MENU_PATH, Menu
 
     identity = TargetIdentity(
         "25H2", 26200, 9974, "x64", tmp_path / "Windows", OWNER, LOADER
@@ -230,7 +228,7 @@ def test_stale_menu_cannot_publish_across_new_native_failure(
 def test_restart_rechecks_native_phase_after_prompt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from win_offline_update import windows_updates, winre_menu
+    from wuo import windows_updates, winre_menu
 
     identity = TargetIdentity(
         "25H2", 26200, 9974, "x64", tmp_path / "Windows", OWNER, LOADER
@@ -267,8 +265,8 @@ def test_restart_rechecks_native_phase_after_prompt(
 def test_incomplete_native_phase_does_not_offer_existing_recovery_restart(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from win_offline_update import windows_updates
-    from win_offline_update.winre_menu import Menu
+    from wuo import windows_updates
+    from wuo.winre_menu import Menu
 
     identity = TargetIdentity(
         "25H2", 26200, 9974, "x64", tmp_path / "Windows", OWNER, LOADER
@@ -296,9 +294,9 @@ def test_incomplete_native_phase_does_not_offer_existing_recovery_restart(
 def test_pending_native_hooks_remain_visible_after_future_selection_is_disabled(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from win_offline_update import windows_hooks, windows_updates
-    from win_offline_update.hook_selection import resolve_selection
-    from win_offline_update.winre_menu import Menu
+    from wuo import windows_hooks, windows_updates
+    from wuo.hook_selection import resolve_selection
+    from wuo.winre_menu import Menu
 
     identity = TargetIdentity(
         "25H2", 26200, 9974, "x64", tmp_path / "Windows", OWNER, LOADER
@@ -328,8 +326,8 @@ def test_pending_native_hooks_remain_visible_after_future_selection_is_disabled(
 def test_unfinished_native_phase_rejects_new_hook_flags_before_rescan(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from win_offline_update import windows_updates
-    from win_offline_update.winre_menu import Menu
+    from wuo import windows_updates
+    from wuo.winre_menu import Menu
 
     identity = TargetIdentity(
         "25H2", 26200, 9974, "x64", tmp_path / "Windows", OWNER, LOADER

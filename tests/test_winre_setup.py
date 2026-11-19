@@ -7,7 +7,7 @@ import pytest
 
 pytestmark = pytest.mark.skipif(os.name != "nt", reason="Requires Windows PowerShell")
 
-SCRIPT = Path(__file__).parents[1] / "src" / "win_offline_update" / "winre_setup.ps1"
+SCRIPT = Path(__file__).parents[1] / "src" / "wuo" / "winre_setup.ps1"
 MACHINE = "12345678-1234-1234-1234-123456789abc"
 
 
@@ -145,8 +145,10 @@ def test_serviced_image_without_any_registered_tool_is_left_as_is(
     assert sorted(path.name for path in tools.iterdir()) == ["vendor-notes.txt"]
 
 
+@pytest.mark.parametrize("label", ["Windows Offline Update", "wuo"])
 def test_clear_owned_shell_label_preserves_other_recovery_settings(
     tmp_path: Path,
+    label: str,
 ) -> None:
     windows = tmp_path / "Windows"
     recovery = windows / "System32/Recovery"
@@ -161,7 +163,7 @@ def test_clear_owned_shell_label_preserves_other_recovery_settings(
     )
     for path in (active, recovery):
         (path / "ReCustomization.xml").write_text(
-            '<BootShell><WinRETool locale="en-us"><Name>Windows Offline Update</Name>'
+            f'<BootShell><WinRETool locale="en-us"><Name>{label}</Name>'
             "<Description>Apply a staged update job</Description></WinRETool></BootShell>",
             encoding="ascii",
         )
