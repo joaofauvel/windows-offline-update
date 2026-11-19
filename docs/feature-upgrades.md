@@ -4,6 +4,31 @@ A full Windows Setup upgrade is not automated by `wuo`. Installations that need
 registry changes to access their boot disk require a stronger guarantee than a
 script that runs after the upgrade succeeds.
 
+## Compatibility preview
+
+The development branch can check a full Windows 11 upgrade offer with the
+matching ISO. Use an administrator PowerShell and get the SHA-256 for the exact
+ISO from the **Verify your download** section of Microsoft's download page.
+The preview compares the entire file against the digest you supply and checks
+the Setup signature. Use the published digest independently of the copy you
+want to verify. [Microsoft Windows 11 downloads](https://www.microsoft.com/en-us/software-download/windows11)
+
+```powershell
+wuo update --check-feature 'C:\Downloads\Windows11.iso' --iso-sha256 '<Microsoft SHA-256>' --accept-setup-eula
+```
+
+Windows Update Agent must offer the full upgrade to this PC. The ISO needs a
+matching build, edition, architecture and default system UI language. Setup
+runs a compatibility scan and can write Panther logs. The preview stages no
+recovery job and requests no restart. `--accept-setup-eula` accepts the
+applicable Microsoft software license terms for the scan.
+
+The preview displays the planned rollback policy. Full feature upgrades will
+default to rollback and its backups. `--no-rollback` previews skipping them
+for that upgrade. It does not change Windows Setup's own recovery.
+
+## Preboot hooks
+
 The required sequence is:
 
 1. Setup applies the replacement Windows installation and finishes the registry

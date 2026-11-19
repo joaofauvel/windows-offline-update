@@ -127,6 +127,19 @@ class Menu:
         with self._lock():
             return self._windows_complete_locked()
 
+    @contextmanager
+    def feature_preview(self) -> Iterator[None]:
+        if not self.installed:
+            yield
+            return
+        with self._lock():
+            if self._pending_id() is not None:
+                raise ValueError(
+                    "Resolve the pending recovery job with wuo status first."
+                )
+            windows_updates.require_completed_phase(self.target, self.root)
+            yield
+
     def publish(self, source: Path) -> Path:
         with self._lock():
             self._require_windows_complete_locked()

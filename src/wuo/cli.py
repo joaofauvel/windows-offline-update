@@ -65,6 +65,17 @@ async def _update(client: httpx.AsyncClient, args: argparse.Namespace) -> int:
         else:
             selected = read_selection(menu.profile)
         await asyncio.to_thread(describe_selection, selected)
+        if args.check_feature is not None:
+            from .feature_upgrade import check_feature
+
+            with menu.feature_preview():
+                return await check_feature(
+                    client,
+                    identity,
+                    args.check_feature,
+                    args.iso_sha256,
+                    rollback=args.feature_rollback,
+                )
         return await _stage_update(
             client, args, identity, menu, configured, output, selected.path
         )
@@ -327,6 +338,28 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Preview planned installation and recovery servicing without making changes.",
     )
     workflow.add_argument(
+        "--check-feature",
+        type=Path,
+        metavar="ISO",
+        help="Check whether a Microsoft ISO can upgrade this PC and keep apps and data.",
+    )
+    workflow.add_argument(
+        "--iso-sha256",
+        metavar="SHA256",
+        help="Microsoft-published ISO digest for --check-feature.",
+    )
+    workflow.add_argument(
+        "--accept-setup-eula",
+        action="store_true",
+        help="Accept the Windows Setup license terms for --check-feature.",
+    )
+    workflow.add_argument(
+        "--no-rollback",
+        dest="feature_rollback",
+        action="store_false",
+        help="Preview a full feature upgrade with wuo rollback and backups skipped.",
+    )
+    workflow.add_argument(
         "--driver-cache",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -478,6 +511,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     try:
         args = parser.parse_args(argv)
+        if args.command == "update":
+            if args.check_feature is not None:
+                if not args.iso_sha256 or not args.accept_setup_eula:
+                    workflow.error(
+                        "--check-feature requires --iso-sha256 and --accept-setup-eula"
+                    )
+                if args.manual or any(category != "features" for category in args.only):
+                    workflow.error("--check-feature checks full feature upgrades only")
+                args.dry_run = True
+            elif args.iso_sha256 or args.accept_setup_eula or not args.feature_rollback:
+                workflow.error(
+                    "ISO and feature rollback options require --check-feature"
+                )
     except SystemExit as result:
         return int(result.code) if isinstance(result.code, int) else 1
     if args.command is None:

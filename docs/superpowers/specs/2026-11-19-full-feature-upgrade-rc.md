@@ -34,6 +34,15 @@ compatibility check leaves the feature offer incomplete and does not prevent
 unrelated updates. Once a full-upgrade job is accepted, it runs alone. Discard
 the previous scan's offers and rescan against the replacement build.
 
+Full feature upgrades default to wuo-managed rollback and its backups.
+`wuo update --no-rollback` explicitly skips those backups and automatic
+restoration for that upgrade. It does not disable Windows Setup's own recovery
+or change the existing recovery safeguards for CBS packages and drivers. The
+job preview and confirmation show which mode will be used. With rollback
+disabled, a rejected hook still needs a persistent recovery path with a way to
+repair and retry the hook. A failed check must never authorize the new OS to
+boot. Both modes need a cold-restart test before either can be armed.
+
 ## Approaches
 
 - **Menu handoff to Setup's temporary SafeOS.** Selected for consistency with
@@ -52,9 +61,11 @@ the previous scan's offers and rescan against the replacement build.
    one job. Serialize with the existing update workflow. Capture only the
    declarative registry hooks already accepted by wuo. A pending job keeps
    the same captured hooks through retry.
-2. Before invoking any committing Setup command, back up the source SYSTEM
-   hive, apply and verify the captured pre hooks, and persist recovery state.
-   A failure before Setup starts restores the source values. Once a Setup
+2. Before invoking any committing Setup command, persist recovery state and
+   apply and verify the captured pre hooks. With rollback enabled, save the
+   source SYSTEM hive before the hooks and restore the source values if a
+   failure occurs before Setup starts. With rollback disabled, require a safe
+   way to apply the hooks without retaining a backup. Once a Setup
    command that may commit has been invoked, treat the job as potentially
    committed until native state proves otherwise. Test `/Auto Upgrade /NoReboot`
    as the point to prepare Setup's own transient
@@ -67,18 +78,18 @@ the previous scan's offers and rescan against the replacement build.
    SafeOS without bypassing the launcher. The native method for preserving
    Setup's one-shot boot target is a lab decision, not an assumed contract.
 3. After successful SafeOS and before the replacement kernel starts, locate
-   the exact target with its volume and machine identity. Back up and load
-   SYSTEM, resolve its default control set, apply captured post hooks, read
+   the exact target with its volume and machine identity. Load SYSTEM, resolve
+   its default control set, apply captured post hooks, read
    them back, and unload the hive. Only the verified path requests a boot of
    the replacement OS. Empty profiles still require target and Setup checks.
    A failed hook and a power interruption must leave the next normal boot
    on a verified recovery or rollback path until the job authorizes the new
    installation. An error prompt in PE alone does not satisfy this condition.
-4. A rejected post hook after commit must initiate a verified rollback to the
-   previous bootable Windows installation. Prefer Setup's own rollback if the
+4. With rollback enabled, a rejected post hook after commit must initiate a
+   verified rollback to the previous bootable Windows installation. Prefer Setup's own rollback if the
    lab proves it is available at this precise phase. A saved hook hive alone
    cannot undo the filesystem migration or boot configuration changes.
-   Before accepting an upgrade, require a recoverable prior state and a
+   With rollback enabled, before accepting an upgrade, require a recoverable prior state and a
    tested path to restore the Windows installation and its Windows boot files.
    The preboot failure test passes only after the original Windows build
    starts and the source identity and original boot-critical values verify.
