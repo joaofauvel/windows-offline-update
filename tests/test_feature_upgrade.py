@@ -77,7 +77,8 @@ def test_cli_plans_rollback_by_default(
         cli.main(
             [
                 "update",
-                "--check-feature",
+                "--dry-run",
+                "--feature-iso",
                 "windows.iso",
                 "--iso-sha256",
                 "a" * 64,
@@ -88,7 +89,7 @@ def test_cli_plans_rollback_by_default(
         == 0
     )
     assert cli.main(["update", "--no-rollback"]) == 2
-    assert cli.main(["update", "--check-feature", "windows.iso"]) == 2
+    assert cli.main(["update", "--dry-run", "--feature-iso", "windows.iso"]) == 2
 
 
 def test_preview_isolated_from_staging_and_restart(
@@ -98,6 +99,10 @@ def test_preview_isolated_from_staging_and_restart(
         TARGET, windows=tmp_path / "Windows", machine_guid=str(UUID(int=5))
     )
     calls = []
+    processed = []
+    scans = []
+    driver = Offer(str(UUID(int=7)), "Driver offer", "drivers")
+    enablement = replace(OFFER, id=str(UUID(int=8)), title=OFFER.title + " (KB1234567)")
 
     def refuse(*args: object, **kwargs: object) -> None:
         pytest.fail("Feature preview attempted to stage or restart Windows")
@@ -105,22 +110,45 @@ def test_preview_isolated_from_staging_and_restart(
     async def check(
         client: AsyncClient,
         installed: TargetIdentity,
-        iso: Path,
-        digest: str,
-        *,
-        rollback: bool,
-    ) -> int:
+        offers: list[Offer],
+        media: feature.FeatureMedia,
+    ) -> None:
         assert installed == identity
-        calls.append((iso, digest, rollback))
-        return 0
+        assert offers == [OFFER]
+        calls.append((media.iso, media.sha256, media.rollback))
+
+    def scan(installed: TargetIdentity) -> tuple[list[Offer], None]:
+        assert installed == identity
+        scans.append(installed)
+        return [OFFER, driver, enablement], None
+
+    async def process(
+        _client: object,
+        _installed: object,
+        _output: object,
+        offer: Offer,
+        **options: object,
+    ) -> bool:
+        assert options["dry_run"] is True
+        processed.append(offer)
+        return True
 
     monkeypatch.setattr("wuo.target.read_target", lambda *, read_loader: identity)
-    monkeypatch.setattr(cli, "_stage_update", refuse)
+    monkeypatch.setattr("wuo.update.scan_offers", scan)
+    monkeypatch.setattr("wuo.update._process_offer", process)
     monkeypatch.setattr(Menu, "resume", refuse)
+    monkeypatch.setattr(Menu, "publish", refuse)
     monkeypatch.setattr(feature, "check_feature", check)
+    assert cli.main(["update"]) == 1
+    assert processed == [OFFER, driver, enablement]
+    assert scans == [identity]
+    assert not calls
+    processed.clear()
+    scans.clear()
     arguments = [
         "update",
-        "--check-feature",
+        "--dry-run",
+        "--feature-iso",
         "windows.iso",
         "--iso-sha256",
         "a" * 64,
@@ -129,17 +157,26 @@ def test_preview_isolated_from_staging_and_restart(
     ]
     assert cli.main(arguments) == 0
     assert calls == [(Path("windows.iso"), "a" * 64, False)]
+    assert scans == [identity]
+    assert processed == [driver, enablement]
+
+    assert cli.main([*arguments, "--only", "drivers"]) == 0
+    assert processed == [driver, enablement, driver]
+    assert len(calls) == 1
+    assert cli.main([*arguments, "--only", "features"]) == 0
+    assert processed == [driver, enablement, driver, enablement]
+    assert len(calls) == 2
 
     menu = Menu(identity)
     menu.root.mkdir(parents=True)
     (menu.root / "installed.id").write_text(identity.machine_guid, encoding="ascii")
     (menu.root / "pending.id").write_text(str(UUID(int=6)), encoding="ascii")
     assert cli.main(arguments) == 1
-    assert len(calls) == 1
+    assert len(calls) == 2
     (menu.root / "pending.id").unlink()
     (menu.root / "windows-request.json").write_text("{}", encoding="ascii")
     assert cli.main(arguments) == 1
-    assert len(calls) == 1
+    assert len(calls) == 2
 
 
 HARNESS = r"""

@@ -5,37 +5,54 @@ import json
 import os
 import re
 import subprocess
+from dataclasses import dataclass
 from importlib.resources import as_file, files
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import httpx
 from bs4 import BeautifulSoup
 
 from .target import TargetIdentity, read_target
-from .update import Offer, scan_offers
+
+if TYPE_CHECKING:
+    from .update import Offer
 
 _RELEASE_HISTORY = "https://learn.microsoft.com/en-us/windows/release-health/windows11-release-information"
 _RELEASE = re.compile(r"\b[0-9]{2}H[12]\b", re.I)
 _HEADING = re.compile(r"Version ([0-9]{2}H[12]) \(OS build ([0-9]+)\)", re.I)
 
 
+@dataclass(frozen=True, slots=True)
+class FeatureMedia:
+    iso: Path
+    sha256: str
+    rollback: bool = True
+
+
+def offered_release(offer: Offer, identity: TargetIdentity) -> str | None:
+    if (
+        identity.installation_type.casefold() != "client"
+        or not _RELEASE.fullmatch(identity.release)
+        or offer.category != "features"
+        or offer.revision is None
+        or offer.revision < 1
+        or not re.search(r"\bWindows 11\b", offer.title, re.I)
+        or re.search(r"\b(KB[0-9]+|enablement)\b", offer.title, re.I)
+    ):
+        return None
+    releases = [match.group() for match in _RELEASE.finditer(offer.title)]
+    if len(releases) == 1 and releases[0].upper() > identity.release.upper():
+        return releases[0].upper()
+    return None
+
+
 def select_offer(offers: list[Offer], identity: TargetIdentity) -> tuple[Offer, str]:
-    if identity.installation_type.casefold() != "client":
-        raise ValueError("Full client feature upgrades require Windows Client.")
-    if not _RELEASE.fullmatch(identity.release):
-        raise ValueError("Could not identify the installed Windows release.")
-    candidates: list[tuple[Offer, str]] = []
-    for offer in offers:
-        if (
-            offer.category != "features"
-            or not offer.revision
-            or not re.search(r"\bWindows 11\b", offer.title, re.I)
-            or re.search(r"\b(KB[0-9]+|enablement)\b", offer.title, re.I)
-        ):
-            continue
-        releases = _RELEASE.findall(offer.title)
-        if len(releases) == 1 and releases[0].upper() > identity.release.upper():
-            candidates.append((offer, releases[0].upper()))
+    candidates = [
+        (offer, release)
+        for offer in offers
+        if (release := offered_release(offer, identity)) is not None
+    ]
     if not candidates:
         raise ValueError("No eligible full Windows 11 feature upgrade was offered.")
     if len(candidates) != 1:
@@ -155,20 +172,11 @@ def _scan_media(identity: TargetIdentity, iso: Path, digest: str, build: int) ->
 async def check_feature(
     client: httpx.AsyncClient,
     identity: TargetIdentity,
-    iso: Path,
-    digest: str,
-    *,
-    rollback: bool,
-) -> int:
-    if not re.fullmatch(r"[0-9a-fA-F]{64}", digest):
+    offers: list[Offer],
+    media: FeatureMedia,
+) -> None:
+    if not re.fullmatch(r"[0-9a-fA-F]{64}", media.sha256):
         raise ValueError("Supply the ISO's Microsoft-published SHA-256 digest.")
-    print("Checking full feature upgrade offers from Windows Update Agent…", flush=True)
-    try:
-        offers, issue = await asyncio.to_thread(scan_offers, identity)
-    except subprocess.TimeoutExpired as error:
-        raise ValueError("Windows Update Agent scan timed out.") from error
-    if issue:
-        raise ValueError(issue)
     offer, release = select_offer(offers, identity)
     response = await client.get(_RELEASE_HISTORY)
     response.raise_for_status()
@@ -177,11 +185,11 @@ async def check_feature(
         raise ValueError(
             "The running Windows identity changed during the feature check."
         )
-    print(f"  Offered: {offer.title} ({offer.id}, revision {offer.revision})")
-    policy = "enabled by default" if rollback else "skipped on request"
+    policy = "enabled by default" if media.rollback else "skipped on request"
     print(f"  Planned rollback and backups for this feature upgrade: {policy}.")
     print("Checking the ISO and running Windows Setup compatibility scan…", flush=True)
-    await asyncio.to_thread(_scan_media, identity, iso, digest.lower(), build)
+    await asyncio.to_thread(
+        _scan_media, identity, media.iso, media.sha256.lower(), build
+    )
     print("Windows Setup confirmed compatibility with keeping apps and data.")
     print("Feature upgrade check only. No installation or recovery job was started.")
-    return 0

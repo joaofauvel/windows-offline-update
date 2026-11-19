@@ -14,6 +14,7 @@ lazy import httpx
 
 from .models import DownloadManifest, Update
 lazy from . import bundle, catalog, downloads, feeds, target
+lazy from .feature_upgrade import FeatureMedia
 lazy from .hook_registry import HookRegistry
 lazy from .hook_selection import describe_selection, read_selection, resolve_selection
 lazy from .update import PreparedUpdates, run_update
@@ -65,17 +66,6 @@ async def _update(client: httpx.AsyncClient, args: argparse.Namespace) -> int:
         else:
             selected = read_selection(menu.profile)
         await asyncio.to_thread(describe_selection, selected)
-        if args.check_feature is not None:
-            from .feature_upgrade import check_feature
-
-            with menu.feature_preview():
-                return await check_feature(
-                    client,
-                    identity,
-                    args.check_feature,
-                    args.iso_sha256,
-                    rollback=args.feature_rollback,
-                )
         return await _stage_update(
             client, args, identity, menu, configured, output, selected.path
         )
@@ -90,27 +80,37 @@ async def _stage_update(
     output: Path,
     profile: Path | None,
 ) -> int:
+    iso = getattr(args, "feature_iso", None)
+    feature_media = (
+        FeatureMedia(iso, args.iso_sha256, rollback=args.feature_rollback)
+        if iso is not None
+        else None
+    )
 
-    async def scan(prepared: PreparedUpdates | None = None) -> int:
+    async def scan(
+        prepared: PreparedUpdates | None = None, *, dry_run: bool = args.dry_run
+    ) -> int:
         return await run_update(
             client,
             identity,
             output,
             only=tuple(args.only),
-            dry_run=args.dry_run,
+            dry_run=dry_run,
             driver_cache_fallback=args.driver_cache,
             profile=profile,
             extractor=args.extractor,
             prepared=prepared,
+            feature_media=feature_media,
         )
 
     if not configured:
         if getattr(args, "manual", False):
             return await scan()
+        result = await scan(PreparedUpdates(output), dry_run=True)
         if args.dry_run:
-            return await scan(PreparedUpdates(output))
+            return result
         print(
-            "Windows updates are not installed by this command until setup is complete. Run wuo setup, then wuo update. Use --manual only to download packages for manual installation."
+            "Run wuo setup to enable staging and recovery servicing. Use --manual to download packages for manual installation."
         )
         return 1
     if args.dry_run:
@@ -335,23 +335,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     workflow.add_argument(
         "--dry-run",
         action="store_true",
-        help="Preview planned installation and recovery servicing without making changes.",
+        help="Preview planned installation and recovery servicing.",
     )
     workflow.add_argument(
-        "--check-feature",
+        "--feature-iso",
         type=Path,
         metavar="ISO",
-        help="Check whether a Microsoft ISO can upgrade this PC and keep apps and data.",
+        help="Use a downloaded Microsoft ISO for a feature compatibility scan with --dry-run.",
     )
     workflow.add_argument(
         "--iso-sha256",
         metavar="SHA256",
-        help="Microsoft-published ISO digest for --check-feature.",
+        help="Microsoft-published SHA-256 of the feature ISO.",
     )
     workflow.add_argument(
         "--accept-setup-eula",
         action="store_true",
-        help="Accept the Windows Setup license terms for --check-feature.",
+        help="Accept the Windows Setup license terms for the feature compatibility scan.",
     )
     workflow.add_argument(
         "--no-rollback",
@@ -512,18 +512,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         args = parser.parse_args(argv)
         if args.command == "update":
-            if args.check_feature is not None:
+            if args.feature_iso is not None:
+                if not args.dry_run:
+                    workflow.error("--feature-iso currently requires --dry-run")
                 if not args.iso_sha256 or not args.accept_setup_eula:
                     workflow.error(
-                        "--check-feature requires --iso-sha256 and --accept-setup-eula"
+                        "--feature-iso requires --iso-sha256 and --accept-setup-eula"
                     )
-                if args.manual or any(category != "features" for category in args.only):
-                    workflow.error("--check-feature checks full feature upgrades only")
-                args.dry_run = True
             elif args.iso_sha256 or args.accept_setup_eula or not args.feature_rollback:
-                workflow.error(
-                    "ISO and feature rollback options require --check-feature"
-                )
+                workflow.error("ISO and feature rollback options require --feature-iso")
     except SystemExit as result:
         return int(result.code) if isinstance(result.code, int) else 1
     if args.command is None:

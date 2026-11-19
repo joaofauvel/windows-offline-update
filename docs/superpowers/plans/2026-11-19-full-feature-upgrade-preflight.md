@@ -4,7 +4,7 @@
 
 **Goal:** Let `wuo update` validate a Windows 11 feature upgrade offer and matching ISO, then perform a native keep-apps-and-data compatibility scan.
 
-**Architecture:** The feature check is an explicit preview. It queries the configured Windows Update Agent and matches a single offer to the corresponding base build in Microsoft's release history. A native PowerShell process holds the verified ISO open, mounts it read-only, checks the installation image, invokes Setup with `/Compat ScanOnly`, and cleans up. WinRE jobs, registry hooks and Windows updates are not applied during this check.
+**Architecture:** The normal update scan discovers every category unless `--only` limits it. A dry run with `--feature-iso` can also match one full feature offer to its base build in Microsoft's release history. A native PowerShell process holds the verified ISO open, mounts it read-only, checks the installation image, invokes Setup with `/Compat ScanOnly`, and cleans up. The compatibility check runs before any future install-capable workflow.
 
 **Tech stack:** Python 3.15, httpx, Beautiful Soup, Windows PowerShell, DISM, Windows Setup, pytest.
 

@@ -6,15 +6,19 @@ script that runs after the upgrade succeeds.
 
 ## Compatibility preview
 
-The development branch can check a full Windows 11 upgrade offer with the
-matching ISO. Use an administrator PowerShell and get the SHA-256 for the exact
-ISO from the **Verify your download** section of Microsoft's download page.
+The normal `wuo update` scan includes feature upgrades. Use
+`wuo update --dry-run --only features` to list just those offers.
+
+For a full upgrade offer, the development branch can also check whether
+Windows Setup can keep apps and data using a downloaded Microsoft ISO.
+Use an administrator PowerShell and get the SHA-256 for the exact ISO from
+the **Verify your download** section of Microsoft's download page.
 The preview compares the entire file against the digest you supply and checks
 the Setup signature. Use the published digest independently of the copy you
 want to verify. [Microsoft Windows 11 downloads](https://www.microsoft.com/en-us/software-download/windows11)
 
 ```powershell
-wuo update --check-feature 'C:\Downloads\Windows11.iso' --iso-sha256 '<Microsoft SHA-256>' --accept-setup-eula
+wuo update --dry-run --feature-iso 'C:\Downloads\Windows11.iso' --iso-sha256 '<Microsoft SHA-256>' --accept-setup-eula
 ```
 
 Windows Update Agent must offer the full upgrade to this PC. The ISO needs a

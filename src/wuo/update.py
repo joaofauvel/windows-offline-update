@@ -14,7 +14,7 @@ import httpx
 from . import bundle, catalog, downloads, feeds, target
 from .models import Update
 from .target import TargetIdentity
-lazy from . import driver_cache
+lazy from . import driver_cache, feature_upgrade
 
 _UPGRADES = "3689bdc8-b205-4af4-8d4a-a63924c5e9d5"
 _ARCH = re.compile(
@@ -649,7 +649,11 @@ async def _process_offer(
                 f"{identity.release} {identity.architecture} and the hardware ID above."
             )
         elif offer.category == "features":
-            print(f"  If full Setup media is required: {feeds.WINDOWS_MEDIA}")
+            if feature_upgrade.offered_release(offer, identity) is not None:
+                print(
+                    "  Full feature upgrade. Use --dry-run --feature-iso to check a Microsoft ISO."
+                )
+            print(f"  Microsoft Setup media: {feeds.WINDOWS_MEDIA}")
         elif offer.category == "defender":
             print(f"  Security intelligence downloads: {feeds.DEFENDER}")
         return False
@@ -666,7 +670,10 @@ async def run_update(
     profile: Path | None = None,
     extractor: str = "7z.exe",
     prepared: PreparedUpdates | None = None,
+    feature_media: feature_upgrade.FeatureMedia | None = None,
 ) -> int:
+    if feature_media is not None and not dry_run:
+        raise ValueError("The feature compatibility scan requires a dry run.")
     print(
         f"Scanning Windows {identity.release} {identity.architecture} ({identity.build}.{identity.revision}) via Windows Update Agent…",
         flush=True,
@@ -683,7 +690,18 @@ async def run_update(
         print("No matching offers from this scan.")
         return int(bool(issue))
     failures = 0
+    full_offers = []
     for offer in selected:
+        if (
+            feature_media is not None
+            and feature_upgrade.offered_release(offer, identity) is not None
+        ):
+            print(
+                f"\n[features] {offer.title} ({offer.id}, revision {offer.revision})",
+                flush=True,
+            )
+            full_offers.append(offer)
+            continue
         completed = await _process_offer(
             client,
             identity,
@@ -696,8 +714,26 @@ async def run_update(
             prepared=prepared,
         )
         failures += not completed
+    if feature_media is not None:
+        if full_offers:
+            from .winre_menu import Menu
+
+            try:
+                if issue:
+                    raise ValueError(
+                        "A complete Windows Update Agent scan is required."
+                    )
+                with Menu(identity).feature_preview():
+                    await feature_upgrade.check_feature(
+                        client, identity, full_offers, feature_media
+                    )
+            except (OSError, ValueError, httpx.HTTPError) as error:
+                print(f"Feature compatibility check incomplete: {error}")
+                failures += len(full_offers)
+        elif not only or "features" in only:
+            print("No eligible full feature upgrade was offered for the supplied ISO.")
     print(
-        f"\n{len(selected)} offer(s) checked, {failures} lookup or download failure(s)."
+        f"\n{len(selected)} offer(s) checked, {failures} lookup, download, or compatibility failure(s)."
     )
     if prepared is not None:
         if prepared.security:
