@@ -9,8 +9,9 @@ script that runs after the upgrade succeeds.
 The normal `wuo update` scan includes feature upgrades. Use
 `wuo update --dry-run --only features` to list just those offers.
 
-For a full upgrade offer, the development branch can also check whether
-Windows Setup can keep apps and data using a downloaded Microsoft ISO.
+The development branch first checks for a standalone package. It can also
+check whether Windows Setup can keep apps and data using a downloaded
+Microsoft ISO for a feature offer whose delivery route still needs review.
 Use an administrator PowerShell and get the SHA-256 for the exact ISO from
 the **Verify your download** section of Microsoft's download page.
 The preview compares the entire file against the digest you supply and checks
@@ -21,7 +22,7 @@ want to verify. [Microsoft Windows 11 downloads](https://www.microsoft.com/en-us
 wuo update --dry-run --feature-iso 'C:\Downloads\Windows11.iso' --iso-sha256 '<Microsoft SHA-256>' --accept-setup-eula
 ```
 
-Windows Update Agent must offer the full upgrade to this PC. The ISO needs a
+Windows Update Agent must offer the feature upgrade to this PC. The ISO needs a
 matching build, edition, architecture and default system UI language. Setup
 runs a compatibility scan and can write Panther logs. The preview stages no
 recovery job and requests no restart. `--accept-setup-eula` accepts the

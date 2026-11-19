@@ -1,4 +1,5 @@
 import argparse
+import asyncio
 import hashlib
 import json
 import os
@@ -11,8 +12,9 @@ from uuid import UUID
 import pytest
 from httpx import AsyncClient
 
-from wuo import cli
+from wuo import cli, update
 from wuo import feature_upgrade as feature
+from wuo.models import Update, UpdateFile
 from wuo.target import TargetIdentity
 from wuo.update import Offer
 from wuo.winre_menu import Menu
@@ -38,6 +40,68 @@ def test_only_one_new_full_feature_offer_is_eligible() -> None:
         feature.select_offer(irrelevant, TARGET)
     with pytest.raises(ValueError, match="Multiple"):
         feature.select_offer([OFFER, replace(OFFER, id=str(UUID(int=2)))], TARGET)
+
+
+def test_plain_feature_title_can_refer_to_an_enablement_kb() -> None:
+    raw = json.dumps(
+        {
+            "status": 2,
+            "updates": [
+                {
+                    "id": OFFER.id,
+                    "title": OFFER.title,
+                    "type": 1,
+                    "revision": 4,
+                    "kb_articles": ["5121794", "KB5121794", ""],
+                }
+            ],
+        }
+    )
+    offers, issue = update.parse_offers(raw)
+    assert issue is None
+    assert offers[0].kb_articles == ("KB5121794",)
+    assert feature.offered_release(offers[0], TARGET) is None
+
+
+def test_iso_preview_preserves_a_feature_offer_with_a_standalone_package(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(update, "scan_offers", lambda _: ([OFFER], None))
+
+    async def package(_: AsyncClient, offer: Offer, identity: TargetIdentity) -> Update:
+        assert offer == OFFER
+        assert identity == TARGET
+        return Update(
+            offer.id,
+            offer.title,
+            architecture="x64",
+            files=(
+                UpdateFile(
+                    "enablement.cab",
+                    "https://download.windowsupdate.com/enablement.cab",
+                    sha256="a" * 64,
+                ),
+            ),
+        )
+
+    async def refuse(*_: object) -> None:
+        pytest.fail("A compatible standalone package was routed to Setup")
+
+    monkeypatch.setattr(update, "_package", package)
+    monkeypatch.setattr(feature, "check_feature", refuse)
+
+    async def run() -> int:
+        async with AsyncClient() as client:
+            return await update.run_update(
+                client,
+                TARGET,
+                tmp_path,
+                dry_run=True,
+                feature_media=feature.FeatureMedia(Path("windows.iso"), "a" * 64),
+            )
+
+    assert asyncio.run(run()) == 0
+    assert "Would download enablement.cab" in capsys.readouterr().out
 
 
 def test_published_build_must_be_unique_and_match_explicit_offer_build() -> None:
@@ -130,6 +194,10 @@ def test_preview_isolated_from_staging_and_restart(
         **options: object,
     ) -> bool:
         assert options["dry_run"] is True
+        candidates = options["setup_candidates"]
+        if offer == OFFER and isinstance(candidates, list):
+            candidates.append(offer)
+            return True
         processed.append(offer)
         return True
 

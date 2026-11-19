@@ -31,12 +31,14 @@ class FeatureMedia:
 
 
 def offered_release(offer: Offer, identity: TargetIdentity) -> str | None:
+    """Find offers eligible for an explicitly requested Setup preview."""
     if (
         identity.installation_type.casefold() != "client"
         or not _RELEASE.fullmatch(identity.release)
         or offer.category != "features"
         or offer.revision is None
         or offer.revision < 1
+        or offer.kb_articles
         or not re.search(r"\bWindows 11\b", offer.title, re.I)
         or re.search(r"\b(KB[0-9]+|enablement)\b", offer.title, re.I)
     ):
@@ -54,10 +56,10 @@ def select_offer(offers: list[Offer], identity: TargetIdentity) -> tuple[Offer, 
         if (release := offered_release(offer, identity)) is not None
     ]
     if not candidates:
-        raise ValueError("No eligible full Windows 11 feature upgrade was offered.")
+        raise ValueError("No eligible Windows 11 feature offer for a Setup preview.")
     if len(candidates) != 1:
         raise ValueError(
-            "Multiple full feature upgrade offers matched this installation."
+            "Multiple Windows Setup preview candidates matched this installation."
         )
     return candidates[0]
 

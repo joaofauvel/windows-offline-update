@@ -84,6 +84,11 @@ $updates = @(
             type = [int]$update.Type
             hardware = $hardwareId
             payloads = $payloads
+            kb_articles = @(
+                for ($j = 0; $j -lt $update.KBArticleIDs.Count; $j++) {
+                    [string]$update.KBArticleIDs.Item($j)
+                }
+            )
             categories = @(
                 for ($j = 0; $j -lt $update.Categories.Count; $j++) {
                     [string]$update.Categories.Item($j).CategoryID
@@ -117,6 +122,7 @@ class Offer:
     hardware_verified: bool = False
     payload_names: tuple[str, ...] = ()
     revision: int | None = None
+    kb_articles: tuple[str, ...] = ()
 
 
 def _builds(title: str) -> set[tuple[int, int]]:
@@ -171,6 +177,10 @@ def parse_offers(raw: str) -> tuple[list[Offer], str | None]:
         hardware_id = item.get("hardware")
         hardware_id = hardware_id if isinstance(hardware_id, str) else ""
         revision = item.get("revision")
+        kb_numbers = (
+            value.strip().upper().removeprefix("KB")
+            for value in _strings(item.get("kb_articles"))
+        )
         offers[update_id] = Offer(
             update_id,
             title,
@@ -184,6 +194,13 @@ def parse_offers(raw: str) -> tuple[list[Offer], str | None]:
             revision
             if isinstance(revision, int) and not isinstance(revision, bool)
             else None,
+            tuple(
+                dict.fromkeys(
+                    f"KB{number}"
+                    for number in kb_numbers
+                    if re.fullmatch(r"[0-9]+", number)
+                )
+            ),
         )
     return list(offers.values()), issue
 
@@ -518,6 +535,7 @@ async def _process_offer(
     profile: Path | None,
     extractor: str,
     prepared: PreparedUpdates | None,
+    setup_candidates: list[Offer] | None = None,
 ) -> bool:
     print(f"\n[{offer.category}] {offer.title} ({offer.id})", flush=True)
     if prepared is not None:
@@ -552,6 +570,12 @@ async def _process_offer(
         try:
             selected = await _package(client, offer, identity)
         except catalog.SourceError:
+            if (
+                setup_candidates is not None
+                and feature_upgrade.offered_release(offer, identity) is not None
+            ):
+                setup_candidates.append(offer)
+                return True
             if (
                 tried_driver_cache
                 or not driver_cache_fallback
@@ -649,9 +673,11 @@ async def _process_offer(
                 f"{identity.release} {identity.architecture} and the hardware ID above."
             )
         elif offer.category == "features":
+            if offer.kb_articles:
+                print(f"  Windows Update articles: {', '.join(offer.kb_articles)}")
             if feature_upgrade.offered_release(offer, identity) is not None:
                 print(
-                    "  Full feature upgrade. Use --dry-run --feature-iso to check a Microsoft ISO."
+                    "  Use --dry-run --feature-iso to check compatibility with Microsoft Setup media."
                 )
             print(f"  Microsoft Setup media: {feeds.WINDOWS_MEDIA}")
         elif offer.category == "defender":
@@ -690,18 +716,8 @@ async def run_update(
         print("No matching offers from this scan.")
         return int(bool(issue))
     failures = 0
-    full_offers = []
+    setup_candidates: list[Offer] | None = [] if feature_media is not None else None
     for offer in selected:
-        if (
-            feature_media is not None
-            and feature_upgrade.offered_release(offer, identity) is not None
-        ):
-            print(
-                f"\n[features] {offer.title} ({offer.id}, revision {offer.revision})",
-                flush=True,
-            )
-            full_offers.append(offer)
-            continue
         completed = await _process_offer(
             client,
             identity,
@@ -712,10 +728,11 @@ async def run_update(
             profile=profile,
             extractor=extractor,
             prepared=prepared,
+            setup_candidates=setup_candidates,
         )
         failures += not completed
     if feature_media is not None:
-        if full_offers:
+        if setup_candidates:
             from .winre_menu import Menu
 
             try:
@@ -725,13 +742,13 @@ async def run_update(
                     )
                 with Menu(identity).feature_preview():
                     await feature_upgrade.check_feature(
-                        client, identity, full_offers, feature_media
+                        client, identity, setup_candidates, feature_media
                     )
             except (OSError, ValueError, httpx.HTTPError) as error:
                 print(f"Feature compatibility check incomplete: {error}")
-                failures += len(full_offers)
+                failures += len(setup_candidates)
         elif not only or "features" in only:
-            print("No eligible full feature upgrade was offered for the supplied ISO.")
+            print("No matching feature offer for the ISO compatibility preview.")
     print(
         f"\n{len(selected)} offer(s) checked, {failures} lookup, download, or compatibility failure(s)."
     )
