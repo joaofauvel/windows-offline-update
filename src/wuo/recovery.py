@@ -137,7 +137,12 @@ def render_feature_source_hooks(hooks: tuple[Hook, ...], *, rollback: bool) -> s
 
 
 def render_feature_restore(
-    job: str, owner: TargetIdentity, image: FeatureImage, receipt: bytes
+    job: str,
+    owner: TargetIdentity,
+    image: FeatureImage,
+    receipt: bytes,
+    *,
+    preserve_boot_order: bool = False,
 ) -> str:
     """Render recovery of a committed feature upgrade from its verified backup."""
     saved = json.loads(receipt)
@@ -237,6 +242,12 @@ def render_feature_restore(
         "BOOT_FILE_COUNT": str(sum(name.startswith(owned) for name in seen)),
         "VERIFY_FILES": "\n".join(checks),
         "RESTORE_EXTRA": "\n".join(auxiliary),
+        "RESTORE_BOOT_ORDER": (
+            rf'(>"%WINDOWS%\ProgramData\WinOfflineUpdate\jobs\{job}\boot-rollback.id" echo {job})'
+            " || echo Boot order restoration could not be queued. Review firmware setup after restarting."
+            if preserve_boot_order
+            else ""
+        ),
     }
     template = (
         files("wuo").joinpath("feature_restore.cmd.in").read_text(encoding="ascii")

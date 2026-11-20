@@ -105,7 +105,12 @@ async def _stage_update(
 ) -> int:
     iso = getattr(args, "feature_iso", None)
     feature_media = (
-        FeatureMedia(iso, args.iso_sha256, rollback=bool(args.backup_drive))
+        FeatureMedia(
+            iso,
+            args.iso_sha256,
+            rollback=bool(args.backup_drive),
+            preserve_boot_order=getattr(args, "preserve_boot_order", False),
+        )
         if iso is not None
         else None
     )
@@ -416,6 +421,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Enable wuo rollback for the feature upgrade using this separate NTFS drive.",
     )
     workflow.add_argument(
+        "--preserve-boot-order",
+        action="store_true",
+        help="Preserve UEFI boot order and the existing EFI fallback loader after a full feature upgrade.",
+    )
+    workflow.add_argument(
         "--driver-cache",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -585,8 +595,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 or args.accept_setup_eula
                 or args.no_rollback
                 or args.backup_drive
+                or args.preserve_boot_order
             ):
-                workflow.error("ISO and feature rollback options require --feature-iso")
+                workflow.error("ISO and feature recovery options require --feature-iso")
     except SystemExit as result:
         return int(result.code) if isinstance(result.code, int) else 1
     if args.command is None:

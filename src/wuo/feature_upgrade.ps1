@@ -1,7 +1,9 @@
 [CmdletBinding(DefaultParameterSetName = 'Preview')]
 param(
     [Parameter(Mandatory, ParameterSetName = 'Prepare')][switch]$Prepare,
-    [Parameter(Mandatory, ParameterSetName = 'Finalize')][Guid]$FinalizeJob
+    [Parameter(Mandatory, ParameterSetName = 'Finalize')][Guid]$FinalizeJob,
+    [Parameter(Mandatory, ParameterSetName = 'Complete')][Guid]$CompleteJob,
+    [Parameter(Mandatory, ParameterSetName = 'Complete')][ValidateSet('success', 'failure')][string]$Outcome
 )
 
 $ErrorActionPreference = 'Stop'
@@ -88,6 +90,69 @@ function Assert-SourceMachine {
     Assert-SourceBuild
 }
 
+function Assert-BootPreservationAssets([string]$Job, $Request) {
+    $assets = $Request.boot_preservation
+    if (!$assets) { return }
+    if (!$assets.'feature_boot.ps1' -or !$assets.'boot-order.json') {
+        throw 'The feature upgrade is missing a required boot preservation asset.'
+    }
+    foreach ($asset in $assets.PSObject.Properties) {
+        if ($asset.Name -cnotin 'feature_boot.ps1', 'boot-order.json', 'boot-fallback.efi' -or
+            $asset.Value -cnotmatch '^[0-9a-f]{64}$') {
+            throw 'The feature upgrade declares an invalid boot preservation asset.'
+        }
+        $path = Join-Path $Job $asset.Name
+        Assert-PlainPath $path
+        if ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ne $asset.Value) {
+            throw "The boot preservation asset $($asset.Name) changed after capture."
+        }
+    }
+}
+
+function Complete-FeatureBoot([string]$Job, [string]$JobId, $Request, [string]$Completion) {
+    if (!$Request.boot_preservation) { throw 'Boot preservation was not requested for this upgrade.' }
+    $result = Join-Path $Job 'boot-order-result.json'
+    if (Test-Path -LiteralPath $result) {
+        Assert-PlainPath $result
+        $previous = [IO.File]::ReadAllText($result) | ConvertFrom-Json
+        if ($previous.order -in 'restored', 'unchanged' -and
+            $previous.fallback -in 'restored', 'unchanged', 'absent') { return }
+    }
+    try {
+        $machine = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Cryptography' -Name MachineGuid).MachineGuid
+        $version = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
+        if ($machine -ne $Request.machine) { throw 'Boot preservation belongs to a different installation.' }
+        if ($Completion -eq 'success') {
+            Assert-JobMarker (Join-Path $Job 'precommit.done') $JobId
+            if ($version.CurrentBuildNumber -ne $Request.image.build -or
+                $version.UBR -lt $Request.image.revision -or $version.EditionID -ne $Request.image.edition) {
+                throw 'The upgraded Windows installation could not be verified for boot preservation.'
+            }
+        } elseif ("$($version.CurrentBuildNumber).$($version.UBR)" -ne $Request.source) {
+            throw 'The original Windows installation could not be verified for boot preservation.'
+        }
+        $phase = Join-Path $Job 'boot-completion.phase'
+        if (Test-Path -LiteralPath $phase) { Assert-PlainPath $phase }
+        [IO.File]::WriteAllText($phase, "$Completion`r`n", [Text.Encoding]::ASCII)
+        Assert-BootPreservationAssets $Job $Request
+        $null = & (Join-Path $Job 'feature_boot.ps1') -Mode Restore -JobPath $Job
+        Assert-PlainPath $result
+    } catch {
+        $message = $_.Exception.Message
+        $report = @{schema=1; order='failed'; order_detail=$message; fallback='failed'; fallback_detail=$message}
+        $temporary = Join-Path $Job "boot-order-result-$([Guid]::NewGuid().ToString('N')).tmp"
+        [IO.File]::WriteAllText($temporary, ($report | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+        if (Test-Path -LiteralPath $result) {
+            $previousPath = "$temporary.old"
+            [IO.File]::Replace($temporary, $result, $previousPath)
+            [IO.File]::Delete($previousPath)
+        } else { [IO.File]::Move($temporary, $result) }
+    }
+    $menu = Join-Path (Split-Path -Parent (Split-Path -Parent $Job)) 'menu'
+    Assert-ProtectedJobDirectory $menu
+    [IO.File]::WriteAllText((Join-Path $menu 'boot-order-last.id'), "$JobId`r`n", [Text.Encoding]::ASCII)
+}
+
 function Get-MatchingImage {
     param([string]$Root)
 
@@ -136,26 +201,38 @@ function Get-MatchingImage {
 }
 
 $finalizing = $PSCmdlet.ParameterSetName -eq 'Finalize'
+$completing = $PSCmdlet.ParameterSetName -eq 'Complete'
 $stagedSystem = Join-Path "$env:SystemDrive\" '$WINDOWS.~BT\NewOS\Windows\System32\Config\SYSTEM'
-if ($finalizing) {
+if ($finalizing -or $completing) {
     if ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value -ne 'S-1-5-18') {
         throw 'A feature upgrade can only resume from the LocalSystem startup task.'
     }
-    $jobId = $FinalizeJob.ToString('D')
+    $jobId = if ($finalizing) { $FinalizeJob.ToString('D') } else { $CompleteJob.ToString('D') }
     $programData = Join-Path "$env:SystemDrive\" 'ProgramData'
     $root = Join-Path $programData 'WinOfflineUpdate'
     $jobs = Join-Path $root 'jobs'
     $job = Join-Path $jobs $jobId
     $authorized = Join-Path $job 'authorized.id'
     $claimed = Join-Path $job 'claimed.id'
-    if (!(Test-Path -LiteralPath $authorized)) { return }
+    $rollbackMarker = Join-Path $job 'boot-rollback.id'
+    $bootPhase = Join-Path $job 'boot-completion.phase'
+    $rolledBack = $finalizing -and (Test-Path -LiteralPath $rollbackMarker)
+    $retryBoot = $finalizing -and (Test-Path -LiteralPath $bootPhase)
+    if (!$completing -and !$rolledBack -and !$retryBoot -and !(Test-Path -LiteralPath $authorized)) { return }
     Assert-PlainPath $programData -Directory
     foreach ($path in $root, $jobs, $job) {
         Assert-ProtectedJobDirectory $path
     }
-    Assert-JobMarker (Join-Path $job 'feature.ready') $jobId
-    Assert-JobMarker $authorized $jobId
-    if (Test-Path -LiteralPath $claimed) { throw 'This feature upgrade has already been claimed.' }
+    if ($rolledBack) {
+        Assert-JobMarker $rollbackMarker $jobId
+    } else {
+        Assert-JobMarker (Join-Path $job 'feature.ready') $jobId
+        if ($completing -or $retryBoot) { Assert-JobMarker $claimed $jobId }
+        else {
+            Assert-JobMarker $authorized $jobId
+            if (Test-Path -LiteralPath $claimed) { throw 'This feature upgrade has already been claimed.' }
+        }
+    }
     $manifest = Join-Path $job 'feature.json'
     Assert-PlainPath $manifest
     $request = Get-Content -LiteralPath $manifest -Raw | ConvertFrom-Json
@@ -167,6 +244,18 @@ if ($finalizing) {
         $request.callback_sha256 -notmatch '^[0-9a-f]{64}$') {
         throw 'Invalid feature upgrade request.'
     }
+    if ($completing -or $rolledBack -or $retryBoot) {
+        if ($rolledBack -and $request.rollback -ne $true) { throw 'The rollback request is missing.' }
+        $completion = if ($rolledBack) { 'rollback' } elseif ($completing) { $Outcome } else {
+            Assert-PlainPath $bootPhase
+            $phaseText = [IO.File]::ReadAllText($bootPhase, [Text.Encoding]::ASCII)
+            if ($phaseText -cnotin "success`r`n", "failure`r`n") { throw 'Invalid boot preservation completion phase.' }
+            $phaseText.TrimEnd("`r", "`n")
+        }
+        Complete-FeatureBoot $job $jobId $request $completion
+        return
+    }
+    Assert-BootPreservationAssets $job $request
     $env:WUO_FEATURE_ISO = $request.iso
     $env:WUO_FEATURE_SHA256 = $request.sha256
     $env:WUO_FEATURE_SOURCE = $request.source

@@ -56,8 +56,20 @@ Under **Troubleshoot → wuo**, a compatible pending rollback is offered for
 confirmation. From independent WinRE, use the backup drive's recovery
 letter and run `restore.cmd check` to check eligibility before `restore.cmd apply`.
 
-Rollback restores Windows Boot Manager's files and BCD on EFI. Use the
-firmware setup menu to restore a preferred UEFI entry order if Setup changes it.
+Rollback restores Windows Boot Manager's files and BCD on EFI.
+
+## Preserve the UEFI boot order
+
+Add `--preserve-boot-order` to a full feature upgrade to save the current
+firmware boot order and eligible EFI fallback loader. The flag is available
+with or without `--backup-drive`. Use `--dry-run` to see the EFI partition,
+boot order, and fallback file before staging.
+
+After Setup completes, wuo restores the saved order by matching the original
+entries to their current loader identities. It keeps newly added entries.
+If Setup replaced an existing third-party fallback with the verified Windows
+Boot Manager, wuo restores the captured file. `wuo status` shows the outcome
+and identifies entries or files that need manual attention.
 
 ## Preboot hooks
 

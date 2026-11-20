@@ -180,6 +180,142 @@ Assert-FeatureBackupAvailable $env:WUO_FIXTURE $env:WUO_JOB @{machine=$env:WUO_M
     assert calls.exists() is (backup in {"bad-catalog", "ready"}), result.stderr
 
 
+@pytest.mark.skipif(POWERSHELL is None, reason="Windows PowerShell is required")
+@pytest.mark.parametrize("change", ["none", "snapshot", "helper", "unknown"])
+def test_native_resume_binds_the_boot_preservation_assets(
+    tmp_path: Path, change: str
+) -> None:
+    assert POWERSHELL is not None
+    digests = {}
+    for name in ("feature_boot.ps1", "boot-order.json"):
+        (tmp_path / name).write_bytes(b"fixture")
+        digests[name] = hashlib.sha256(b"fixture").hexdigest()
+    if change in {"snapshot", "helper"}:
+        name = "boot-order.json" if change == "snapshot" else "feature_boot.ps1"
+        (tmp_path / name).write_bytes(b"changed")
+    elif change == "unknown":
+        digests["unrelated"] = "a" * 64
+    (tmp_path / "request.json").write_text(
+        json.dumps({"boot_preservation": digests}), encoding="ascii"
+    )
+    harness = tmp_path / "validate.ps1"
+    harness.write_text(
+        r"""
+$ErrorActionPreference = 'Stop'
+$ast = [System.Management.Automation.Language.Parser]::ParseFile($env:WUO_SCRIPT, [ref]$null, [ref]$null)
+foreach ($definition in $ast.FindAll({
+    param($node)
+    $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -in 'Assert-PlainPath', 'Assert-BootPreservationAssets'
+}, $false)) {
+    . ([scriptblock]::Create($definition.Extent.Text))
+}
+$request = Get-Content -LiteralPath (Join-Path $env:WUO_FIXTURE 'request.json') -Raw | ConvertFrom-Json
+Assert-BootPreservationAssets $env:WUO_FIXTURE $request
+""",
+        encoding="ascii",
+    )
+    result = subprocess.run(
+        [POWERSHELL, "-NoProfile", "-NonInteractive", "-File", harness],
+        env={
+            **{k: v for k, v in os.environ.items() if k.upper() != "PSMODULEPATH"},
+            "WUO_SCRIPT": str(SCRIPT),
+            "WUO_FIXTURE": str(tmp_path),
+        },
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert (result.returncode == 0) is (change == "none"), result.stderr
+    if change != "none":
+        assert "boot preservation asset" in result.stderr
+
+
+@pytest.mark.skipif(POWERSHELL is None, reason="Windows PowerShell is required")
+@pytest.mark.parametrize(
+    ("phase", "current_build", "restores"),
+    [
+        ("success", "26300", True),
+        ("success", "26200", False),
+        ("failure", "26200", True),
+        ("failure", "26300", False),
+        ("rollback", "26200", True),
+    ],
+)
+def test_native_boot_restoration_requires_a_verified_terminal_build(
+    tmp_path: Path, phase: str, current_build: str, restores: bool
+) -> None:
+    assert POWERSHELL is not None
+    job_id = str(UUID(int=18))
+    job = tmp_path / "jobs" / job_id
+    job.mkdir(parents=True)
+    (tmp_path / "menu").mkdir()
+    (job / "precommit.done").write_bytes(f"{job_id}\r\n".encode("ascii"))
+    (job / "boot-order-result.json").write_text(
+        json.dumps(
+            {
+                "schema": 1,
+                "order": "blocked",
+                "fallback": "skipped",
+            }
+        ),
+        encoding="ascii",
+    )
+    (job / "feature_boot.ps1").write_text(
+        r"""
+param($Mode, $JobPath)
+if ($Mode -ne 'Restore') { throw 'Unexpected boot preservation mode.' }
+[IO.File]::WriteAllText((Join-Path $JobPath 'boot-order-result.json'), '{"schema":1,"order":"restored","fallback":"restored"}')
+""",
+        encoding="ascii",
+    )
+    harness = tmp_path / "completion.ps1"
+    harness.write_text(
+        r"""
+$ErrorActionPreference = 'Stop'
+$ast = [Management.Automation.Language.Parser]::ParseFile($env:WUO_SCRIPT, [ref]$null, [ref]$null)
+foreach ($definition in $ast.FindAll({
+    param($node)
+    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -in 'Assert-PlainPath', 'Assert-JobMarker', 'Complete-FeatureBoot'
+}, $false)) { . ([scriptblock]::Create($definition.Extent.Text)) }
+function Assert-ProtectedJobDirectory($Path) { Assert-PlainPath $Path -Directory }
+function Assert-BootPreservationAssets($Job, $Request) {}
+function Get-ItemProperty($Path, $Name) {
+    if ($Name -eq 'MachineGuid') { return @{MachineGuid='known-machine'} }
+    return @{CurrentBuildNumber=$env:WUO_TEST_BUILD; UBR=9457; EditionID='Core'}
+}
+$request = @{
+    machine='known-machine'; source='26200.9457'; boot_preservation=$true;
+    image=@{build=26300; revision=9457; edition='Core'}
+}
+Complete-FeatureBoot $env:WUO_FIXTURE $env:WUO_JOB_ID $request $env:WUO_COMPLETION
+""",
+        encoding="ascii",
+    )
+    result = subprocess.run(
+        [POWERSHELL, "-NoProfile", "-NonInteractive", "-File", harness],
+        env={
+            **{k: v for k, v in os.environ.items() if k.upper() != "PSMODULEPATH"},
+            "WUO_SCRIPT": str(SCRIPT),
+            "WUO_FIXTURE": str(job),
+            "WUO_JOB_ID": job_id,
+            "WUO_TEST_BUILD": current_build,
+            "WUO_COMPLETION": phase,
+        },
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    report = json.loads((job / "boot-order-result.json").read_bytes())
+    assert report["order"] == ("restored" if restores else "failed")
+    assert (job / "boot-completion.phase").exists() is restores
+    assert (tmp_path / "menu" / "boot-order-last.id").read_text().strip() == job_id
+
+
 def test_only_one_new_full_feature_offer_is_eligible() -> None:
     irrelevant = [
         replace(OFFER, title="Windows 11, version 25H2"),
@@ -214,6 +350,34 @@ def test_plain_feature_title_can_refer_to_an_enablement_kb() -> None:
     assert issue is None
     assert offers[0].kb_articles == ("KB5121794",)
     assert feature.offered_release(offers[0], TARGET) is None
+
+
+def test_wua_classified_full_feature_offer_can_reference_a_kb() -> None:
+    raw = json.dumps(
+        {
+            "status": 2,
+            "updates": [
+                {
+                    "id": "aa272a56-7dbf-4349-b410-10ae6defc750",
+                    "title": "Windows 11, version 26H2",
+                    "type": 1,
+                    "revision": 1,
+                    "kb_articles": ["5132061"],
+                    "categories": ["3689bdc8-b205-4af4-8d4a-a63924c5e9d5"],
+                }
+            ],
+        }
+    )
+    offers, issue = update.parse_offers(raw)
+    assert issue is None
+    assert feature.offered_release(offers[0], TARGET) == "26H2"
+    assert (
+        feature.offered_release(
+            replace(offers[0], title="Windows 11, version 26H2 enablement package"),
+            TARGET,
+        )
+        is None
+    )
 
 
 def test_iso_preview_preserves_a_feature_offer_with_a_standalone_package(
@@ -353,6 +517,31 @@ def test_feature_apply_accepts_an_opt_in_backup_destination(
     assert cli.main([*command, "--no-rollback"]) == 0
     assert cli.main([*command, "--backup-drive", "E:", "--no-rollback"]) == 2
     assert drives == [None, "E:", None]
+
+
+def test_feature_apply_accepts_boot_preservation_without_backup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def accept(args: argparse.Namespace) -> int:
+        assert args.preserve_boot_order is True
+        assert args.backup_drive is None
+        return 0
+
+    monkeypatch.setattr(cli, "_run", accept)
+    assert (
+        cli.main(
+            [
+                "update",
+                "--feature-iso",
+                "windows.iso",
+                "--iso-sha256",
+                "a" * 64,
+                "--accept-setup-eula",
+                "--preserve-boot-order",
+            ]
+        )
+        == 0
+    )
 
 
 @pytest.mark.parametrize(

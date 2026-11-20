@@ -9,7 +9,7 @@ from dataclasses import asdict, dataclass
 from hashlib import sha256
 from importlib.resources import as_file, files
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 from uuid import UUID
 
 import httpx
@@ -32,6 +32,7 @@ class FeatureMedia:
     iso: Path
     sha256: str
     rollback: bool = False
+    preserve_boot_order: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,7 +82,7 @@ def offered_release(offer: Offer, identity: TargetIdentity) -> str | None:
         or offer.category != "features"
         or offer.revision is None
         or offer.revision < 1
-        or offer.kb_articles
+        or (offer.kb_articles and not offer.upgrade_classified)
         or not re.search(r"\bWindows 11\b", offer.title, re.I)
         or re.search(r"\b(KB[0-9]+|enablement)\b", offer.title, re.I)
     ):
@@ -266,6 +267,22 @@ def _run_native(
     return stdout
 
 
+def feature_boot(
+    identity: TargetIdentity,
+    mode: Literal["Preview", "Capture"],
+    job: Path | None = None,
+) -> dict[str, object]:
+    arguments = ["-Mode", mode]
+    if job is not None:
+        arguments.extend(("-JobPath", str(job)))
+    report = json.loads(
+        _run_native(identity, "feature_boot.ps1", "UEFI boot snapshot", arguments, {})
+    )
+    if not isinstance(report, dict) or report.get("schema") != 1:
+        raise ValueError("The UEFI boot snapshot could not be verified.")
+    return report
+
+
 def backup_feature(
     identity: TargetIdentity, job: UUID, drive: str
 ) -> tuple[bytes, Path]:
@@ -361,6 +378,15 @@ async def check_feature(
         print("  The feature upgrade includes a wuo rollback backup.")
     else:
         print("  Add --backup-drive to create a wuo rollback backup.")
+    if preview and media.preserve_boot_order:
+        boot = await asyncio.to_thread(feature_boot, identity, "Preview")
+        print(f"  EFI partition: {boot['esp']}")
+        entries = boot["entries"]
+        if isinstance(entries, list):
+            print(
+                "  UEFI order: " + ", ".join(str(entry["label"]) for entry in entries)
+            )
+        print(f"  EFI fallback: {boot['fallback_path']} ({boot['fallback_state']})")
     if build is None:
         print(
             "Checking explicitly supplied media without a Windows Update feature offer."

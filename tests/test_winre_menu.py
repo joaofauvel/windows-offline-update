@@ -29,8 +29,12 @@ def test_main_help_shows_the_routine_commands(
 
 
 @pytest.mark.parametrize("backup_fails", [False, True])
+@pytest.mark.parametrize("preserve_boot", [False, True])
 def test_feature_is_published_only_after_backup_and_deferred_setup(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backup_fails: bool
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    backup_fails: bool,
+    preserve_boot: bool,
 ) -> None:
     from wuo import feature_upgrade
     from wuo.winre_menu import Menu
@@ -45,7 +49,9 @@ def test_feature_is_published_only_after_backup_and_deferred_setup(
     (menu.root / "feature-menu.version").write_bytes(b"2\r\n")
     iso = tmp_path / "Windows.iso"
     iso.touch()
-    media = feature_upgrade.FeatureMedia(iso, "ab" * 32, rollback=True)
+    media = feature_upgrade.FeatureMedia(
+        iso, "ab" * 32, rollback=True, preserve_boot_order=preserve_boot
+    )
     image = feature_upgrade.FeatureImage(1, 26300, 9500, "Core", "x64", "en-US")
     events: list[str] = []
     backup_root = tmp_path / "backup"
@@ -53,6 +59,13 @@ def test_feature_is_published_only_after_backup_and_deferred_setup(
     system32.mkdir(parents=True)
     for name in ("certutil.exe", "findstr.exe"):
         (system32 / name).write_bytes(name.encode("ascii"))
+
+    def capture(_target: object, mode: str, job: Path) -> dict[str, object]:
+        assert mode == "Capture"
+        events.append("capture")
+        (job / "boot-order.json").write_text('{"schema": 1}', encoding="ascii")
+        (job / "boot-fallback.efi").write_bytes(b"original fallback")
+        return {"schema": 1}
 
     def backup(_target: object, job: object, _drive: object) -> tuple[bytes, Path]:
         events.append("backup")
@@ -91,6 +104,17 @@ def test_feature_is_published_only_after_backup_and_deferred_setup(
         ).read_bytes()
         for name in ("certutil.exe", "findstr.exe"):
             assert (portable / name).read_bytes() == (system32 / name).read_bytes()
+        if preserve_boot:
+            request = json.loads((job / "feature.json").read_bytes())
+            assert (
+                request["boot_preservation"]["boot-order.json"]
+                == package_hashes(job / "boot-order.json")[0]
+            )
+            assert (portable / "boot-fallback.efi").read_bytes() == b"original fallback"
+            callbacks = system32 / "update" / "runonce" / job.name
+            assert "-Outcome success" in (callbacks / "success.cmd").read_text()
+            assert "-Outcome failure" in (callbacks / "failure.cmd").read_text()
+            assert "boot-rollback.id" in (job / "restore.cmd").read_text()
         events.append("prepare")
 
     def schedule(_job: str, continuation: Path) -> None:
@@ -102,15 +126,22 @@ def test_feature_is_published_only_after_backup_and_deferred_setup(
     monkeypatch.setattr("wuo.winre_menu._run", lambda _: "")
     monkeypatch.setattr(feature_upgrade, "backup_feature", backup)
     monkeypatch.setattr(feature_upgrade, "prepare_media", prepare)
+    monkeypatch.setattr(feature_upgrade, "feature_boot", capture, raising=False)
     monkeypatch.setattr(menu, "_register_feature_task", schedule)
+    capture_events = ["capture", "schedule"] if preserve_boot else []
     if backup_fails:
         with pytest.raises(ValueError, match="backup failed"):
             menu.stage_feature(media, image, None, backup_drive="E:")
-        assert events == ["backup"]
+        assert events == [*capture_events, "backup"]
         assert not (menu.root / "pending.id").exists()
     else:
         job = menu.stage_feature(media, image, None, backup_drive="E:")
-        assert events == ["backup", "prepare", "schedule"]
+        assert events == [
+            *capture_events,
+            "backup",
+            "prepare",
+            *([] if preserve_boot else ["schedule"]),
+        ]
         marker = f"{job.name}\r\n".encode("ascii")
         assert (job / "feature.ready").read_bytes() == marker
         assert (job / "rollback.required").read_bytes() == marker
@@ -118,6 +149,53 @@ def test_feature_is_published_only_after_backup_and_deferred_setup(
         assert (job / "restore.sha256").read_text().strip() == package_hashes(
             job / "restore.cmd"
         )[0]
+
+
+def test_feature_verification_waits_for_boot_preservation_receipt(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from wuo.winre_menu import Menu
+
+    identity = TargetIdentity(
+        "26H2", 26300, 9500, "x64", tmp_path / "Windows", OWNER, LOADER
+    )
+    menu = Menu(identity)
+    state = menu.job_state(JOB)
+    state.mkdir(parents=True)
+    (state / "feature.ready").write_text(f"{JOB}\n", encoding="ascii")
+    (state / "precommit.done").write_text(f"{JOB}\n", encoding="ascii")
+    (state / "feature.json").write_text(
+        json.dumps(
+            {
+                "id": JOB,
+                "machine": OWNER,
+                "source": "26200.9974",
+                "image": {"build": 26300, "revision": 9500, "architecture": "x64"},
+                "boot_preservation": {"boot-order.json": "ab" * 32},
+            }
+        ),
+        encoding="ascii",
+    )
+
+    assert not menu._verify_feature(JOB, state)
+    assert "Boot preservation result is pending" in capsys.readouterr().out
+    (state / "boot-order-result.json").write_text(
+        json.dumps(
+            {
+                "schema": 1,
+                "order": "blocked",
+                "order_detail": "Original entry was changed.",
+                "fallback": "restored",
+                "fallback_detail": "Original fallback was verified.",
+            }
+        ),
+        encoding="ascii",
+    )
+
+    assert menu._verify_feature(JOB, state)
+    output = capsys.readouterr().out
+    assert "Original entry was changed." in output
+    assert "Original fallback was verified." in output
 
 
 @pytest.mark.parametrize("corrupt", [False, True])

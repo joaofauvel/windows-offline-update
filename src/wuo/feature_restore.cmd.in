@@ -59,6 +59,7 @@ for %%J in (BCD.LOG BCD.LOG1 BCD.LOG2) do if exist "%EFI%\EFI\Microsoft\Boot\%%J
 set "VERIFY_ROOT=%EFI%"
 call :verify_efi || goto failed
 (>"%SNAPSHOT%\restore.done" echo @@JOB@@) || goto failed
+@@RESTORE_BOOT_ORDER@@
 echo The previous Windows installation and EFI files were restored.
 goto success
 

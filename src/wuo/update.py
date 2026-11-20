@@ -123,6 +123,7 @@ class Offer:
     payload_names: tuple[str, ...] = ()
     revision: int | None = None
     kb_articles: tuple[str, ...] = ()
+    upgrade_classified: bool = False
 
 
 def _builds(title: str) -> set[tuple[int, int]]:
@@ -201,6 +202,7 @@ def parse_offers(raw: str) -> tuple[list[Offer], str | None]:
                     if re.fullmatch(r"[0-9]+", number)
                 )
             ),
+            upgrade_classified=kind == 1 and _UPGRADES in categories,
         )
     return list(offers.values()), issue
 

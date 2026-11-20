@@ -155,7 +155,12 @@ class Menu:
         """Prepare a single feature job and publish it to the installed WinRE menu."""
         from dataclasses import replace
 
-        from .feature_upgrade import backup_feature, feature_setup_assets, prepare_media
+        from .feature_upgrade import (
+            backup_feature,
+            feature_boot,
+            feature_setup_assets,
+            prepare_media,
+        )
         from .recovery import render_feature_restore, render_feature_source_hooks
         from .target import read_target
 
@@ -208,7 +213,27 @@ class Menu:
                     selected.origins,
                 ):
                     raise ValueError("The hook selection changed during preparation.")
+            continuation = job / "feature_upgrade.ps1"
+            continuation.write_bytes(
+                files("wuo").joinpath("feature_upgrade.ps1").read_bytes()
+            )
+            boot_assets: tuple[Path, ...] = ()
+            if media.preserve_boot_order:
+                feature_boot(self.target, "Capture", job)
+                helper = job / "feature_boot.ps1"
+                helper.write_bytes(files("wuo").joinpath(helper.name).read_bytes())
+                boot_assets = (helper, job / "boot-order.json")
+                if (job / "boot-fallback.efi").is_file():
+                    boot_assets = (*boot_assets, job / "boot-fallback.efi")
+                manifest = json.loads(request)
+                manifest["boot_preservation"] = {
+                    asset.name: package_hashes(asset)[0] for asset in boot_assets
+                }
+                request = json.dumps(manifest, sort_keys=True).encode("ascii")
             (job / "feature.json").write_bytes(request)
+            if media.preserve_boot_order:
+                # A volume rollback must restore the task as well as the snapshot.
+                self._register_feature_task(str(job_id), continuation)
             marker = f"{job_id}\r\n".encode("ascii")
             if any(hook.phase == "pre" for hook in selected.hooks):
                 pre_hooks = job / "source-hooks.cmd"
@@ -225,23 +250,35 @@ class Menu:
                 runner = job / "restore.cmd"
                 runner.write_bytes(
                     render_feature_restore(
-                        str(job_id), self.target, image, receipt
+                        str(job_id),
+                        self.target,
+                        image,
+                        receipt,
+                        preserve_boot_order=media.preserve_boot_order,
                     ).encode("ascii")
                 )
                 (job / "rollback.json").write_bytes(receipt)
                 (job / "restore.sha256").write_bytes(
                     f"{package_hashes(runner)[0]}\r\n".encode("ascii")
                 )
-                self._export_feature_restore(snapshot, job)
+                self._export_feature_restore(snapshot, job, boot_assets=boot_assets)
                 (job / "rollback.required").write_bytes(marker)
             callback_dir.mkdir(parents=True)
             (callback_dir / "precommit.cmd").write_bytes(callback)
+            if boot_assets:
+                for outcome in ("success", "failure"):
+                    (callback_dir / f"{outcome}.cmd").write_bytes(
+                        (
+                            '@echo off\r\nsetlocal\r\nset "PSModulePath="\r\n'
+                            '"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" '
+                            "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "
+                            f'"%SystemDrive%\\ProgramData\\WinOfflineUpdate\\jobs\\{job_id}\\feature_upgrade.ps1" '
+                            f"-CompleteJob {job_id} -Outcome {outcome}\r\nexit /b 0\r\n"
+                        ).encode("ascii")
+                    )
             prepare_media(self.target, media, image)
-            continuation = job / "feature_upgrade.ps1"
-            continuation.write_bytes(
-                files("wuo").joinpath("feature_upgrade.ps1").read_bytes()
-            )
-            self._register_feature_task(str(job_id), continuation)
+            if not media.preserve_boot_order:
+                self._register_feature_task(str(job_id), continuation)
             (job / "target.id").write_bytes(marker)
             (job / "feature.ready").write_bytes(marker)
             pending = job / "pending.id"
@@ -249,7 +286,9 @@ class Menu:
             os.replace(pending, self.root / "pending.id")
             return job
 
-    def _export_feature_restore(self, snapshot: Path, job: Path) -> None:
+    def _export_feature_restore(
+        self, snapshot: Path, job: Path, *, boot_assets: tuple[Path, ...] = ()
+    ) -> None:
         for path in (snapshot.parent, snapshot, snapshot / "rollback.json"):
             if (
                 getattr(path.lstat(), "st_file_attributes", 0)
@@ -270,6 +309,7 @@ class Menu:
             job / "restore.sha256",
             system32 / "certutil.exe",
             system32 / "findstr.exe",
+            *(asset for asset in boot_assets if asset.name != "feature_boot.ps1"),
         )
         with tempfile.TemporaryDirectory(dir=snapshot) as work:
             draft = Path(work) / "recovery"
@@ -444,9 +484,32 @@ class Menu:
                     raise ValueError(
                         f"The installed hook {hook.key} / {hook.name} does not match. Review {state}."
                     )
+        if request.get("boot_preservation") and not self._describe_boot_result(state):
+            print(f"Boot preservation result is pending. Job: {state}")
+            return False
         print(
             f"Feature upgrade verified on build {self.target.build}.{self.target.revision}. Log: {state / 'precommit.log'}"
         )
+        return True
+
+    @staticmethod
+    def _describe_boot_result(state: Path) -> bool:
+        path = state / "boot-order-result.json"
+        try:
+            report = json.loads(path.read_bytes())
+        except FileNotFoundError:
+            return False
+        if (
+            not isinstance(report, dict)
+            or report.get("schema") != 1
+            or any(
+                not isinstance(report.get(key), str)
+                for key in ("order", "order_detail", "fallback", "fallback_detail")
+            )
+        ):
+            raise ValueError(f"Invalid boot preservation result. Review {path}.")
+        print(f"UEFI boot order {report['order']}. {report['order_detail']}")
+        print(f"EFI fallback {report['fallback']}. {report['fallback_detail']}")
         return True
 
     def status(self) -> None:
@@ -458,6 +521,8 @@ class Menu:
             windows_updates.verify(self.target, self.root)
             job_id = self._pending_id()
             if job_id is None:
+                if latest := _read_id(self.root / "boot-order-last.id"):
+                    self._describe_boot_result(self.job_state(latest))
                 print("No update staged.")
                 return
             if self._verify_completed(job_id):
@@ -465,10 +530,13 @@ class Menu:
                 return
             state = self.job_state(job_id)
             if (state / "feature.ready").is_file():
+                boot_reported = self._describe_boot_result(state)
                 if _read_id(state / "precommit.failed") == job_id:
                     print(
                         f"Setup stopped at the precommit check. The original Windows is active. Log: {state / 'precommit.log'}"
                     )
+                elif boot_reported and (state / "boot-completion.phase").is_file():
+                    print(f"Windows Setup completed its feature job. Review {state}.")
                 elif (state / "claimed.id").is_file():
                     print(
                         f"Windows Setup started the feature upgrade. Review {state / 'precommit.log'}."
