@@ -28,8 +28,8 @@ Windows Update offers none. Identify exactly one newer image matching the
 installed edition, architecture and default UI language. When the preview
 matches media to a full feature offer, check the offer's target release and
 base build. Allow a different cumulative revision for that target when native
-Setup accepts the migration. Explicit ISO input currently runs a compatibility
-preview only.
+Setup accepts the migration. `--dry-run` runs the compatibility preview. The
+same ISO can prepare the upgrade once the installed WinRE menu is current.
 
 The physical USB4 installation ran Setup's scan-only check with no WUA
 feature offer. Windows 11 Home x64 en-US 25H2 build 26200.9974 selected
@@ -235,6 +235,17 @@ fallback when SafeOS cannot start, and rollback. Check that the experimental
 launcher never propagates to the installed recovery image. Any real keep-apps
 version upgrade can supply the generic RC evidence. Physical USB4 and Limine
 use need a recoverable test before being presented as supported.
+
+The real cross-version rollback restored the original Windows volume and 140
+saved EFI files from independent WinRE. The restored machine ran build
+26200.6584 after a cold boot. Its unrelated EFI file remained intact. Windows
+updated its own BCD and `BOOTSTAT.DAT` during the first ordinary boot.
+The current CLI stages this route only when both the installed menu and the
+feature media pass validation. By default, `--backup-drive` selects a separate
+NTFS disk with capacity for the original Windows volume. The WinRE menu can
+offer the matching recovery recipe if a committed upgrade is still pending its
+first boot. Reaching recovery independently is necessary if firmware or the
+default boot chain prevents the installed WinRE menu from loading.
 
 Microsoft documents [Setup command options](https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/windows-setup-command-line-options)
 and [WinPE launch ordering](https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/winpeshlini-reference-launching-an-app-when-winpe-starts).

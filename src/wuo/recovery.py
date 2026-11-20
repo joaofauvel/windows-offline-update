@@ -1,6 +1,8 @@
 """Render a bounded stock WinRE recovery job."""
 
+import json
 from importlib.resources import files
+from pathlib import PureWindowsPath
 from re import fullmatch
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -14,12 +16,12 @@ if TYPE_CHECKING:
     from .target import TargetIdentity
 
 
-def _hook_lines(hooks: tuple[Hook, ...]) -> str:
+def _hook_lines(hooks: tuple[Hook, ...], *, revert_on_failure: bool = False) -> str:
     if not hooks:
         return "exit /b 0"
     lines = ["call :open_hook_hive || exit /b 1"]
     for operation in ("inspect", "write"):
-        for hook in hooks:
+        for index, hook in enumerate(hooks, 1):
             path = "%HOOK_HIVE%"
             if hook.scope == "control-set":
                 path += r"\ControlSet%CS%"
@@ -30,20 +32,47 @@ def _hook_lines(hooks: tuple[Hook, ...]) -> str:
                     f'set "HOOK_NAME={hook.name}"',
                     f'set "HOOK_NEW={hook.value:#x}"',
                     f'set "HOOK_EXPECTED={expected}"',
-                    f"call :{operation}_hook || goto hook_failed",
                 )
             )
+            if revert_on_failure and operation == "write":
+                lines.append(f"call :write_hook || goto revert_{index}")
+            else:
+                lines.append(f"call :{operation}_hook || goto hook_failed")
+            if revert_on_failure and operation == "inspect":
+                lines.append(f'set "ORIGINAL_{index}=%ACTUAL%"')
     lines.extend(
         (
             r'"%SYS%\reg.exe" unload "%HOOK_HIVE%" >>"%LOG%" 2>&1 || exit /b 1',
             "exit /b 0",
         )
     )
+    if revert_on_failure:
+        for index, hook in reversed(list(enumerate(hooks, 1))):
+            path = "%HOOK_HIVE%"
+            if hook.scope == "control-set":
+                path += r"\ControlSet%CS%"
+            lines.extend(
+                (
+                    f":revert_{index}",
+                    rf'set "HOOK_KEY={path}\{hook.key}"',
+                    f'set "HOOK_NAME={hook.name}"',
+                    f'set "HOOK_NEW=%ORIGINAL_{index}%"',
+                    'call :write_hook || set "RESTORE_FAILED=1"',
+                )
+            )
+        lines.extend(
+            (
+                r'if defined RESTORE_FAILED >>"%LOG%" echo The original hook values could not all be restored.',
+                "goto hook_failed",
+            )
+        )
     return "\n".join(lines)
 
 
 def _hook_helpers(system_hive: str, *, backup: bool) -> str:
-    template = files("wuo").joinpath("registry_hooks.cmd.in").read_text(encoding="ascii")
+    template = (
+        files("wuo").joinpath("registry_hooks.cmd.in").read_text(encoding="ascii")
+    )
     backup_line = (
         r'"%SYS%\reg.exe" save "%HOOK_HIVE%" "%JOB%\%PHASE%-SYSTEM.hiv"'
         r' >>"%LOG%" 2>&1 || goto hook_failed' + "\n"
@@ -70,7 +99,9 @@ def render_feature_precommit(
         raise ValueError("Invalid Windows Setup image edition.")
     if image.build <= owner.build or not 0 <= image.revision <= 0xFFFFFFFF:
         raise ValueError("Invalid Windows Setup target build or revision.")
-    template = files("wuo").joinpath("feature_precommit.cmd.in").read_text(encoding="ascii")
+    template = (
+        files("wuo").joinpath("feature_precommit.cmd.in").read_text(encoding="ascii")
+    )
     replacements = {
         "JOB": str(UUID(job)),
         "MACHINE": str(UUID(owner.machine_guid)),
@@ -80,8 +111,136 @@ def render_feature_precommit(
         "TARGET_REVISION": hex(image.revision),
         "TARGET_EDITION": image.edition,
         "HOOKS": _hook_lines(tuple(hook for hook in hooks if hook.phase == "post")),
-        "HOOK_HELPERS": _hook_helpers(r"%NEWOS%\System32\Config\SYSTEM", backup=rollback),
+        "HOOK_HELPERS": _hook_helpers(
+            r"%NEWOS%\System32\Config\SYSTEM", backup=rollback
+        ),
     }
+    for name, value in replacements.items():
+        template = template.replace(f"@@{name}@@", value)
+    return template.replace("\n", "\r\n")
+
+
+def render_feature_source_hooks(hooks: tuple[Hook, ...], *, rollback: bool) -> str:
+    """Apply source hooks in WinRE before authorizing native Setup."""
+    source_hooks = tuple(hook for hook in hooks if hook.phase == "pre")
+    template = (
+        files("wuo").joinpath("feature_source_hooks.cmd.in").read_text(encoding="ascii")
+    )
+    return (
+        template.replace("@@HOOKS@@", _hook_lines(source_hooks, revert_on_failure=True))
+        .replace(
+            "@@HOOK_HELPERS@@",
+            _hook_helpers(r"%TARGET%\Windows\System32\Config\SYSTEM", backup=rollback),
+        )
+        .replace("\n", "\r\n")
+    )
+
+
+def render_feature_restore(
+    job: str, owner: TargetIdentity, image: FeatureImage, receipt: bytes
+) -> str:
+    """Render recovery of a committed feature upgrade from its verified backup."""
+    saved = json.loads(receipt)
+    machine = str(UUID(owner.machine_guid))
+    job = str(UUID(job))
+    if (
+        not isinstance(saved, dict)
+        or saved.get("schema") != 1
+        or saved.get("id") != job
+        or saved.get("machine") != machine
+        or saved.get("source") != f"{owner.build}.{owner.revision}"
+        or not fullmatch(r"[A-Z]:", str(saved.get("original_letter")))
+        or (
+            owner.windows.drive
+            and saved["original_letter"].casefold() != owner.windows.drive.casefold()
+        )
+        or not fullmatch(r"[A-Za-z0-9-]{1,63}", str(saved.get("computer")))
+        or not fullmatch(
+            r"[0-9]{2}/[0-9]{2}/[0-9]{4}-[0-9]{2}:[0-9]{2}", str(saved.get("catalog"))
+        )
+        or image.build <= owner.build
+        or not isinstance(saved.get("boot_files"), list)
+    ):
+        raise ValueError("The feature rollback backup does not match this job.")
+    volumes: dict[str, str] = {}
+    for field in ("windows", "efi", "volume"):
+        match = fullmatch(
+            r"\\\\\?\\Volume\{([0-9a-fA-F-]{36})\}\\", str(saved.get(field))
+        )
+        if match is None:
+            raise ValueError("Invalid feature rollback volume name.")
+        volumes[field] = "\\\\?\\Volume{" + str(UUID(match[1])) + "}\\"
+    if len(set(volumes.values())) != 3:
+        raise ValueError(
+            "The rollback backup, Windows and EFI volumes must be distinct."
+        )
+    checks: list[str] = []
+    auxiliary: list[str] = []
+    seen: set[str] = set()
+    owned = "efi\\microsoft\\boot\\"
+    allowed = {
+        r"efi\microsoft\recovery\bcd",
+        r"efi\boot\bootx64.efi",
+        r"efi\boot\bootia32.efi",
+        r"efi\boot\bootaa64.efi",
+    }
+    for entry in saved["boot_files"]:
+        if not isinstance(entry, dict):
+            raise ValueError("Invalid file in the feature rollback backup.")
+        name, digest = entry.get("path"), entry.get("sha256")
+        if (
+            not isinstance(name, str)
+            or not all(
+                part not in {".", ".."} and fullmatch(r"[A-Za-z0-9_.{} -]+", part)
+                for part in name.split("\\")
+            )
+            or not isinstance(digest, str)
+            or not fullmatch(r"[a-f0-9]{64}", digest)
+        ):
+            raise ValueError("Invalid file or hash in the feature rollback backup.")
+        canonical = name.casefold()
+        if canonical in seen or not (
+            canonical.startswith(owned) or canonical in allowed
+        ):
+            raise ValueError(
+                "The feature rollback backup contains an unexpected EFI file."
+            )
+        seen.add(canonical)
+        checks.append(f'call :verify_file "{name}" {digest} || exit /b 1')
+        if canonical in allowed:
+            parent = PureWindowsPath(name).parent
+            auxiliary.extend(
+                (
+                    rf'if not exist "%EFI%\{parent}\" (mkdir "%EFI%\{parent}" || goto failed)',
+                    rf'copy /b /y "%SNAPSHOT%\{name}" "%EFI%\{name}" >>"%LOG%" || goto failed',
+                )
+            )
+            if canonical == r"efi\microsoft\recovery\bcd":
+                auxiliary.append(
+                    rf'if exist "%EFI%\{name}.LOG*" del /q "%EFI%\{name}.LOG*"'
+                )
+    if owned + "bcd" not in seen or owned + "bootmgfw.efi" not in seen:
+        raise ValueError("The rollback backup has no verified Windows Boot Manager.")
+    replacements = {
+        "JOB": job,
+        "MACHINE": machine,
+        "SOURCE_BUILD": str(owner.build),
+        "SOURCE_UBR": hex(owner.revision),
+        "TARGET_BUILD": str(image.build),
+        "TARGET_UBR": hex(image.revision),
+        "WINDOWS": volumes["windows"],
+        "EFI": volumes["efi"],
+        "BACKUP": volumes["volume"],
+        "COMPUTER": saved["computer"],
+        "VERSION": saved["catalog"],
+        "ORIGINAL_LETTER": saved["original_letter"],
+        "BOOT_FILE_COUNT": str(sum(name.startswith(owned) for name in seen)),
+        "VERIFY_FILES": "\n".join(checks),
+        "RESTORE_EXTRA": "\n".join(auxiliary),
+    }
+    template = (
+        files("wuo").joinpath("feature_restore.cmd.in").read_text(encoding="ascii")
+    )
     for name, value in replacements.items():
         template = template.replace(f"@@{name}@@", value)
     return template.replace("\n", "\r\n")

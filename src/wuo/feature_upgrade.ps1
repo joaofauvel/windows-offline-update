@@ -42,6 +42,19 @@ function Assert-JobMarker {
     }
 }
 
+function Assert-ProtectedJobDirectory([string]$Path) {
+    Assert-PlainPath $Path -Directory
+    $acl = Get-Acl -LiteralPath $Path
+    $trusted = 'S-1-5-18', 'S-1-5-32-544'
+    $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+    $rules = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
+    if ($owner -notin $trusted -or !$rules.Count -or @($rules | Where-Object {
+        $_.AccessControlType -ne 'Allow' -or $_.IdentityReference.Value -notin $trusted
+    }).Count) {
+        throw "The feature job must only grant access to SYSTEM and Administrators: $Path"
+    }
+}
+
 function Assert-SourceMachine {
     $guid = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Cryptography' -Name MachineGuid).MachineGuid
     if ($guid -ne $request.machine) { throw 'This feature upgrade belongs to a different Windows installation.' }
@@ -102,14 +115,17 @@ if ($finalizing) {
         throw 'A feature upgrade can only resume from the LocalSystem startup task.'
     }
     $jobId = $FinalizeJob.ToString('D')
-    $job = Join-Path $env:SystemRoot "System32\wuo\features\$jobId"
+    $programData = Join-Path "$env:SystemDrive\" 'ProgramData'
+    $root = Join-Path $programData 'WinOfflineUpdate'
+    $jobs = Join-Path $root 'jobs'
+    $job = Join-Path $jobs $jobId
     $authorized = Join-Path $job 'authorized.id'
     $claimed = Join-Path $job 'claimed.id'
     if (!(Test-Path -LiteralPath $authorized)) { return }
-    foreach ($relative in 'System32\wuo', 'System32\wuo\features') {
-        Assert-PlainPath (Join-Path $env:SystemRoot $relative) -Directory
+    Assert-PlainPath $programData -Directory
+    foreach ($path in $root, $jobs, $job) {
+        Assert-ProtectedJobDirectory $path
     }
-    Assert-PlainPath $job -Directory
     Assert-JobMarker (Join-Path $job 'feature.ready') $jobId
     Assert-JobMarker $authorized $jobId
     if (Test-Path -LiteralPath $claimed) { throw 'This feature upgrade has already been claimed.' }

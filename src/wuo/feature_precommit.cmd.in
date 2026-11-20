@@ -2,7 +2,7 @@
 setlocal EnableExtensions DisableDelayedExpansion
 set "SYS=%SystemRoot%\System32"
 set "NEWOS=%SYSTEMDRIVE%\$WINDOWS.~BT\NewOS\Windows"
-set "JOB=%SYS%\wuo\features\@@JOB@@"
+set "JOB=%SYSTEMDRIVE%\ProgramData\WinOfflineUpdate\jobs\@@JOB@@"
 set "LOG=%JOB%\precommit.log"
 set "PHASE=post"
 set "HOOK_HIVE=HKLM\WUO_SYSTEM_@@JOB@@"
@@ -32,6 +32,7 @@ exit /b 0
 
 :failed
 >>"%LOG%" echo Staged Windows precommit validation failed. Setup must stop.
+>"%JOB%\precommit.failed" echo @@JOB@@
 exit /b 77
 
 :verify_replacement

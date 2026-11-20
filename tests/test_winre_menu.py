@@ -28,6 +28,81 @@ def test_main_help_shows_the_routine_commands(
     assert cli.main(["prepare-drivers", "--help"]) == 0
 
 
+@pytest.mark.parametrize("backup_fails", [False, True])
+def test_feature_is_published_only_after_backup_and_deferred_setup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backup_fails: bool
+) -> None:
+    from wuo import feature_upgrade
+    from wuo.winre_menu import Menu
+
+    identity = TargetIdentity(
+        "25H2", 26200, 9974, "x64", tmp_path / "Windows", OWNER, LOADER
+    )
+    menu = Menu(identity)
+    menu.root.mkdir(parents=True)
+    menu.job_state(JOB).parent.mkdir()
+    (menu.root / "installed.id").write_text(f"{OWNER}\n", encoding="ascii")
+    (menu.root / "feature-menu.version").write_bytes(b"1\r\n")
+    iso = tmp_path / "Windows.iso"
+    iso.touch()
+    media = feature_upgrade.FeatureMedia(iso, "ab" * 32)
+    image = feature_upgrade.FeatureImage(1, 26300, 9500, "Core", "x64", "en-US")
+    events: list[str] = []
+
+    def backup(_target: object, job: object, _drive: object) -> bytes:
+        events.append("backup")
+        if backup_fails:
+            raise ValueError("backup failed")
+        return json.dumps(
+            {
+                "schema": 1,
+                "id": str(job),
+                "machine": OWNER,
+                "source": "26200.9974",
+                "original_letter": identity.windows.drive or "C:",
+                "computer": "test-pc",
+                "catalog": "11/20/2026-14:39",
+                "windows": "\\\\?\\Volume{11111111-1111-1111-1111-111111111111}\\",
+                "efi": "\\\\?\\Volume{22222222-2222-2222-2222-222222222222}\\",
+                "volume": "\\\\?\\Volume{33333333-3333-3333-3333-333333333333}\\",
+                "boot_files": [
+                    {"path": r"EFI\Microsoft\Boot\BCD", "sha256": "ab" * 32},
+                    {"path": r"EFI\Microsoft\Boot\bootmgfw.efi", "sha256": "cd" * 32},
+                ],
+            }
+        ).encode("ascii")
+
+    def prepare(*_args: object) -> None:
+        assert not (menu.root / "pending.id").exists()
+        assert not list(menu.job_state(JOB).parent.glob("*/feature.ready"))
+        events.append("prepare")
+
+    def schedule(_job: str, continuation: Path) -> None:
+        assert continuation.is_file()
+        assert not (menu.root / "pending.id").exists()
+        events.append("schedule")
+
+    monkeypatch.setattr("wuo.target.read_target", lambda: identity)
+    monkeypatch.setattr("wuo.winre_menu._run", lambda _: "")
+    monkeypatch.setattr(feature_upgrade, "backup_feature", backup)
+    monkeypatch.setattr(feature_upgrade, "prepare_media", prepare)
+    monkeypatch.setattr(menu, "_register_feature_task", schedule)
+    if backup_fails:
+        with pytest.raises(ValueError, match="backup failed"):
+            menu.stage_feature(media, image, None, backup_drive="E:")
+        assert events == ["backup"]
+        assert not (menu.root / "pending.id").exists()
+    else:
+        job = menu.stage_feature(media, image, None, backup_drive="E:")
+        assert events == ["backup", "prepare", "schedule"]
+        marker = f"{job.name}\r\n".encode("ascii")
+        assert (job / "feature.ready").read_bytes() == marker
+        assert (menu.root / "pending.id").read_bytes() == marker
+        assert (job / "restore.sha256").read_text().strip() == package_hashes(
+            job / "restore.cmd"
+        )[0]
+
+
 @pytest.mark.parametrize("corrupt", [False, True])
 def test_only_a_complete_verified_bundle_is_published(
     tmp_path: Path, corrupt: bool

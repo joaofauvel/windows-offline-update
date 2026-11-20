@@ -162,64 +162,27 @@ def _run_media(
         or not iso.is_file()
     ):
         raise ValueError("Supply a local Microsoft Windows installation ISO.")
-    # Use the same native DISM and PowerShell view even under an x86 interpreter.
-    native = identity.windows / "Sysnative"
-    if not native.is_dir():
-        native = identity.windows / "System32"
-    powershell = native / "WindowsPowerShell/v1.0/powershell.exe"
-    # PowerShell 7 modules can shadow the native Windows PowerShell modules.
-    native_env = {
-        name: value
-        for name, value in os.environ.items()
-        if name.upper() != "PSMODULEPATH"
+    settings = {
+        "WUO_FEATURE_ISO": str(iso),
+        "WUO_FEATURE_SHA256": digest,
+        "WUO_FEATURE_SOURCE": f"{identity.build}.{identity.revision}",
+        "WUO_FEATURE_BUILD": "" if build is None else str(build),
+        "WUO_FEATURE_ARCH": identity.architecture,
     }
     operation = "feature compatibility check"
     arguments = []
     if expected is not None:
         operation = "deferred feature preparation"
         arguments.append("-Prepare")
-        native_env.update(
+        settings.update(
             WUO_FEATURE_INDEX=str(expected.index),
             WUO_FEATURE_REVISION=str(expected.revision),
             WUO_FEATURE_EDITION=expected.edition,
             WUO_FEATURE_LANGUAGE=expected.language,
         )
-    with (
-        as_file(files("wuo").joinpath("feature_upgrade.ps1")) as script,
-        subprocess.Popen(
-            [
-                powershell,
-                "-NoProfile",
-                "-NonInteractive",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                script,
-                *arguments,
-            ],
-            env={
-                **native_env,
-                "WUO_FEATURE_ISO": str(iso),
-                "WUO_FEATURE_SHA256": digest,
-                "WUO_FEATURE_SOURCE": f"{identity.build}.{identity.revision}",
-                "WUO_FEATURE_BUILD": "" if build is None else str(build),
-                "WUO_FEATURE_ARCH": identity.architecture,
-            },
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            encoding="utf-8",
-            errors="replace",
-        ) as process,
-    ):
-        while True:
-            try:
-                stdout, stderr = process.communicate(timeout=30)
-                break
-            except subprocess.TimeoutExpired:
-                print(f"The {operation} is still running…", flush=True)
-    if process.returncode:
-        raise ValueError(stderr.strip() or f"The native {operation} failed.")
-    report = json.loads(stdout)
+    report = json.loads(
+        _run_native(identity, "feature_upgrade.ps1", operation, arguments, settings)
+    )
     if (
         not isinstance(report, dict)
         or type(report.get("setup_code")) is not int
@@ -254,6 +217,93 @@ def _run_media(
     return image
 
 
+def _run_native(
+    identity: TargetIdentity,
+    filename: str,
+    operation: str,
+    arguments: list[str],
+    settings: dict[str, str],
+) -> str:
+    # Use the native PowerShell modules even from PowerShell 7 or a 32-bit caller.
+    native = identity.windows / "Sysnative"
+    if not native.is_dir():
+        native = identity.windows / "System32"
+    powershell = native / "WindowsPowerShell/v1.0/powershell.exe"
+    environment = {
+        name: value
+        for name, value in os.environ.items()
+        if name.upper() != "PSMODULEPATH"
+    }
+    with (
+        as_file(files("wuo").joinpath(filename)) as script,
+        subprocess.Popen(
+            [
+                powershell,
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                script,
+                *arguments,
+            ],
+            env={**environment, **settings},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            encoding="utf-8",
+            errors="replace",
+        ) as process,
+    ):
+        while True:
+            try:
+                stdout, stderr = process.communicate(timeout=30)
+                break
+            except subprocess.TimeoutExpired:
+                print(f"The {operation} is still running…", flush=True)
+    if process.returncode:
+        raise ValueError(stderr.strip() or f"The native {operation} failed.")
+    return stdout
+
+
+def backup_feature(identity: TargetIdentity, job: UUID, drive: str) -> bytes:
+    """Snapshot Windows and the active EFI files before any Setup preparation."""
+    if not re.fullmatch(r"[A-Z]:", drive, re.I | re.ASCII):
+        raise ValueError("Select a local rollback drive letter, such as E:.")
+    source = f"{identity.build}.{identity.revision}"
+    machine = str(UUID(identity.machine_guid))
+    stdout = _run_native(
+        identity,
+        "feature_backup.ps1",
+        "feature rollback backup",
+        [
+            "-Job",
+            str(job),
+            "-Machine",
+            machine,
+            "-SourceBuild",
+            source,
+            "-BackupDrive",
+            drive.upper(),
+        ],
+        {},
+    )
+    report = json.loads(stdout)
+    if (
+        not isinstance(report, dict)
+        or report.get("schema") != 1
+        or report.get("id") != str(job)
+        or report.get("machine") != machine
+        or report.get("source") != source
+        or not re.fullmatch(
+            r"[0-9]{2}/[0-9]{2}/[0-9]{4}-[0-9]{2}:[0-9]{2}", str(report.get("catalog"))
+        )
+        or not isinstance(report.get("boot_files"), list)
+        or not report["boot_files"]
+    ):
+        raise ValueError("The native feature backup returned an invalid receipt.")
+    return json.dumps(report, sort_keys=True).encode("ascii")
+
+
 def _scan_media(
     identity: TargetIdentity, iso: Path, digest: str, build: int | None
 ) -> FeatureImage:
@@ -278,6 +328,8 @@ async def check_feature(
     identity: TargetIdentity,
     offers: list[Offer],
     media: FeatureMedia,
+    *,
+    preview: bool = True,
 ) -> FeatureImage:
     if not re.fullmatch(r"[0-9a-fA-F]{64}", media.sha256):
         raise ValueError("Supply the ISO's Microsoft-published SHA-256 digest.")
@@ -304,5 +356,8 @@ async def check_feature(
         _scan_media, identity, media.iso, media.sha256.lower(), build
     )
     print("Windows Setup confirmed compatibility with keeping apps and data.")
-    print("Feature upgrade check only. No installation or recovery job was started.")
+    if preview:
+        print(
+            "Feature upgrade check only. No installation or recovery job was started."
+        )
     return image

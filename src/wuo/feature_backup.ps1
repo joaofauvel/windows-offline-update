@@ -7,6 +7,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 $system32 = Join-Path $env:SystemRoot 'System32'
 $drive = $env:SystemDrive
 $volumeName = '^\\\\\?\\Volume\{[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\}\\$'
@@ -93,8 +94,10 @@ try {
     if ($LASTEXITCODE -ge 8) { throw 'The Windows EFI backup failed.' }
     $bcdCopy = Join-Path $bootCopy 'BCD'
     $null = Invoke-Native 'bcdedit.exe' @('/export', $bcdCopy)
+    $validationCopy = Join-Path $out 'validation.bcd'
+    [IO.File]::Copy($bcdCopy, $validationCopy, $false)
     $live = Invoke-Native 'bcdedit.exe' @('/enum', '{bootmgr}', '/v')
-    $savedStore = Invoke-Native 'bcdedit.exe' @('/store', $bcdCopy, '/enum', '{bootmgr}', '/v')
+    $savedStore = Invoke-Native 'bcdedit.exe' @('/store', $validationCopy, '/enum', '{bootmgr}', '/v')
     if ($live -cne $savedStore) { throw 'The saved BCD does not match the active Windows Boot Manager.' }
     $inventory = @(foreach ($file in Get-ChildItem -LiteralPath $boot -File -Force -Recurse) {
         if ($file.Name -match '^BCD(?:\.LOG.*)?$') { continue }

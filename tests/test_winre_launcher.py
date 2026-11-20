@@ -48,8 +48,7 @@ class LauncherLab(NamedTuple):
 
 
 def test_feature_job_authorizes_once_and_restarts(launcher: LauncherLab) -> None:
-    feature = launcher.root / "features" / JOB
-    feature.mkdir(parents=True)
+    feature = launcher.job
     (feature / "feature.ready").write_bytes(f"{JOB}\r\n".encode("ascii"))
     (feature / "feature.json").write_text("{}", encoding="ascii")
     staged = launcher.root / "NewOS/Windows/System32/Config/SYSTEM"
@@ -63,6 +62,28 @@ def test_feature_job_authorizes_once_and_restarts(launcher: LauncherLab) -> None
 
     assert launcher.run().returncode != 0
     assert launcher.trace.count("Reboot") == 1
+
+
+@pytest.mark.parametrize("approved", [False, True])
+def test_feature_rollback_checks_the_recipe_before_asking_for_approval(
+    launcher: LauncherLab, approved: bool
+) -> None:
+    marker = f"{JOB}\r\n".encode("ascii")
+    (launcher.job / "feature.ready").write_bytes(marker)
+    (launcher.job / "claimed.id").write_bytes(marker)
+    restore = launcher.job / "restore.cmd"
+    restore.write_text(
+        '@echo off\n>>"%WUO_TEST_ROOT%\\trace.txt" echo rollback %~1\nexit /b 0\n',
+        encoding="ascii",
+    )
+    digest = hashlib.sha256(restore.read_bytes()).hexdigest()
+    (launcher.job / "restore.sha256").write_bytes(f"{digest}\r\n".encode("ascii"))
+
+    result = launcher.run(WUO_TEST_ROLLBACK_CHOICE="1" if approved else "2")
+    assert "rollback check" in launcher.trace
+    assert ("rollback apply" in launcher.trace) is approved
+    assert ("Reboot" in launcher.trace) is approved
+    assert (result.returncode == 0) is approved
 
 
 @pytest.fixture
@@ -83,10 +104,10 @@ def launcher(tmp_path: Path) -> LauncherLab:
         ),
         r'"%SYS%\mountvol.exe"': r'call "%~dp0mountvol.cmd"',
         r'"%SYS%\wpeutil.exe"': r'call "%~dp0wpeutil.cmd"',
+        r'"%~dp0choice.exe"': r'call "%~dp0choice.cmd"',
         r"%SYS%\..\Temp\WUO-": r"%WUO_TEST_ROOT%\WUO-",
         r"%TARGET%\ProgramData\WinOfflineUpdate": r"%WUO_TEST_ROOT%",
         r"%TARGET%\ProgramData": r"%WUO_TEST_ROOT%",
-        r"%TARGET%\Windows\System32\wuo": r"%WUO_TEST_ROOT%",
         r"%TARGET%\$WINDOWS.~BT\NewOS\Windows": r"%WUO_TEST_ROOT%\NewOS\Windows",
         r'"%~dp0findstr.exe"': f'"{system / "findstr.exe"}"',
         r'"%~dp0certutil.exe"': f'"{system / "certutil.exe"}"',
@@ -123,6 +144,9 @@ exit /b 0
     (tool / "wpeutil.cmd").write_text(
         '@echo off\n>>"%WUO_TEST_ROOT%\\trace.txt" echo %~1\nexit /b 0\n',
         encoding="ascii",
+    )
+    (tool / "choice.cmd").write_text(
+        "@echo off\nexit /b %WUO_TEST_ROLLBACK_CHOICE%\n", encoding="ascii"
     )
     lab.job.mkdir(parents=True)
     (lab.job / "target.id").write_bytes(f"{JOB}\r\n".encode())

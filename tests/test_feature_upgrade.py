@@ -16,7 +16,7 @@ from wuo import cli, update
 from wuo import feature_upgrade as feature
 from wuo.hooks import Hook
 from wuo.models import Update, UpdateFile
-from wuo.recovery import render_feature_precommit
+from wuo.recovery import render_feature_precommit, render_feature_source_hooks
 from wuo.target import TargetIdentity
 from wuo.update import Offer
 from wuo.winre_menu import Menu
@@ -46,12 +46,28 @@ def test_feature_precommit_renders_only_replacement_hooks() -> None:
     assert "@@" not in script
     assert "OldOnly" not in script
     assert job in script
+    assert rf"%SYSTEMDRIVE%\ProgramData\WinOfflineUpdate\jobs\{job}" in script
     assert r"%SYSTEMDRIVE%\$WINDOWS.~BT\NewOS\Windows" in script
     assert r"Services\UASPStor" in script
     assert 'set "HOOK_EXPECTED=0x3"' in script
     assert r"X:\Windows\System32\reg.exe" not in script
     assert 'reg.exe" save' not in script
     assert script.index("call :apply_hooks") < script.index('" precommit.done')
+
+
+def test_feature_source_hooks_capture_values_before_writing_and_can_revert() -> None:
+    script = render_feature_source_hooks(
+        (
+            Hook("pre", r"Services\First", "Start", 0),
+            Hook("pre", r"Services\Second", "Start", 0),
+            Hook("post", r"Services\ReplacementOnly", "Start", 0),
+        ),
+        rollback=False,
+    )
+    assert "ReplacementOnly" not in script
+    assert 'reg.exe" save' not in script
+    assert script.index('set "ORIGINAL_2=%ACTUAL%"') < script.index("call :write_hook")
+    assert script.index(":revert_2\r\n") < script.index(":revert_1\r\n")
 
 
 def test_feature_asset_request_pins_callback_and_verified_media() -> None:
@@ -135,11 +151,15 @@ def test_iso_preview_preserves_a_feature_offer_with_a_standalone_package(
         installed: TargetIdentity,
         offers: list[Offer],
         media: feature.FeatureMedia,
-    ) -> None:
+        *,
+        preview: bool,
+    ) -> feature.FeatureImage:
+        assert preview
         assert installed == identity
         # A separate ISO preview is allowed, but the CBS offer is not a Setup candidate.
         assert not offers
         previews.append(media.iso)
+        return feature.FeatureImage(6, 26300, 9457, "Professional", "x64", "en-US")
 
     monkeypatch.setattr(update, "_package", package)
     monkeypatch.setattr(feature, "check_feature", check)
@@ -211,6 +231,89 @@ def test_cli_plans_rollback_by_default(
     assert cli.main(["update", "--dry-run", "--feature-iso", "windows.iso"]) == 2
 
 
+def test_feature_apply_requires_an_explicit_backup_destination_or_opt_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def accept(args: argparse.Namespace) -> int:
+        assert not args.dry_run
+        assert (args.backup_drive == "E:") == args.feature_rollback
+        return 0
+
+    monkeypatch.setattr(cli, "_run", accept)
+    command = [
+        "update",
+        "--feature-iso",
+        "windows.iso",
+        "--iso-sha256",
+        "a" * 64,
+        "--accept-setup-eula",
+    ]
+    assert cli.main(command) == 2
+    assert cli.main([*command, "--backup-drive", "E:"]) == 0
+    assert cli.main([*command, "--no-rollback"]) == 0
+    assert cli.main([*command, "--backup-drive", "E:", "--no-rollback"]) == 2
+
+
+def test_update_stages_the_verified_feature_before_offering_the_winre_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    identity = replace(
+        TARGET, windows=tmp_path / "Windows", machine_guid=str(UUID(int=5))
+    )
+    menu = Menu(identity)
+    menu.root.mkdir(parents=True)
+    (menu.root / "installed.id").write_text(identity.machine_guid, encoding="ascii")
+    image = feature.FeatureImage(6, 26300, 9457, "Professional", "x64", "en-US")
+    events: list[str] = []
+
+    async def scan(
+        _client: AsyncClient,
+        _identity: TargetIdentity,
+        _output: Path,
+        *,
+        prepared: update.PreparedUpdates,
+        **_options: object,
+    ) -> int:
+        prepared.feature = image
+        return 0
+
+    def stage(
+        _menu: Menu,
+        media: feature.FeatureMedia,
+        verified: feature.FeatureImage,
+        profile: Path | None,
+        *,
+        backup_drive: str,
+    ) -> Path:
+        assert media.rollback and media.iso == Path("windows.iso")
+        assert verified == image and profile is None and backup_drive == "E:"
+        events.append("stage")
+        return tmp_path
+
+    monkeypatch.setattr(cli.target, "read_target", lambda **_: identity)
+    monkeypatch.setattr(cli, "run_update", scan)
+    monkeypatch.setattr(Menu, "resume", lambda *_, **__: True)
+    monkeypatch.setattr(Menu, "check_windows", lambda _: True)
+    monkeypatch.setattr(Menu, "stage_feature", stage)
+    monkeypatch.setattr(Menu, "offer_restart", lambda _: events.append("restart"))
+    assert (
+        cli.main(
+            [
+                "update",
+                "--feature-iso",
+                "windows.iso",
+                "--iso-sha256",
+                "a" * 64,
+                "--accept-setup-eula",
+                "--backup-drive",
+                "E:",
+            ]
+        )
+        == 0
+    )
+    assert events == ["stage", "restart"]
+
+
 @pytest.mark.parametrize("scan_error", [False, True])
 def test_explicit_iso_preview_without_a_wua_offer(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, scan_error: bool
@@ -241,6 +344,7 @@ def test_explicit_iso_preview_without_a_wua_offer(
     monkeypatch.setattr(feature, "_scan_media", check_native)
     monkeypatch.setattr(Menu, "resume", refuse)
     monkeypatch.setattr(Menu, "publish", refuse)
+    monkeypatch.setattr(Menu, "stage_feature", refuse)
     arguments = [
         "update",
         "--dry-run",
@@ -283,10 +387,14 @@ def test_preview_isolated_from_staging_and_restart(
         installed: TargetIdentity,
         offers: list[Offer],
         media: feature.FeatureMedia,
-    ) -> None:
+        *,
+        preview: bool,
+    ) -> feature.FeatureImage:
+        assert preview
         assert installed == identity
         assert offers == [OFFER]
         calls.append((media.iso, media.sha256, media.rollback))
+        return feature.FeatureImage(6, 26300, 9457, "Professional", "x64", "en-US")
 
     def scan(installed: TargetIdentity) -> tuple[list[Offer], None]:
         assert installed == identity

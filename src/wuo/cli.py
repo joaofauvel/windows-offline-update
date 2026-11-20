@@ -144,9 +144,36 @@ async def _stage_update(
             print(f"{len(prepared.manual)} update(s) still require installation.")
             result = 1
         if not prepared.drivers and not prepared.monthly:
-            print("No update was staged for WinRE.")
-            return result
+            if prepared.feature is None or feature_media is None:
+                print("No update was staged for WinRE.")
+                return result
+            if result:
+                print(
+                    "Resolve the other update failures before preparing the full feature upgrade."
+                )
+                return result
+            current = await asyncio.to_thread(target.read_target)
+            if replace(current, loader_guid=identity.loader_guid) != identity:
+                raise ValueError("The running Windows build changed during the scan.")
+            menu = Menu(current)
+            print(
+                "Preparing Windows Setup. Use Troubleshoot > wuo to continue after preparation."
+            )
+            await asyncio.to_thread(
+                menu.stage_feature,
+                feature_media,
+                prepared.feature,
+                profile,
+                backup_drive=args.backup_drive,
+            )
+            print("Feature upgrade staged.")
+            await asyncio.to_thread(menu.offer_restart)
+            return 0
         category = "monthly" if prepared.monthly else "drivers"
+        if prepared.feature is not None:
+            print(
+                "The full feature upgrade will wait for these updates. Run the same command after restarting."
+            )
         remaining = (
             len(prepared.monthly) - 1 + bool(prepared.drivers)
             if prepared.monthly
@@ -341,7 +368,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--feature-iso",
         type=Path,
         metavar="ISO",
-        help="Check a downloaded Microsoft ISO with --dry-run, even without a Windows Update offer.",
+        help="Use a downloaded Microsoft ISO for a full feature upgrade, even without a Windows Update offer.",
     )
     workflow.add_argument(
         "--iso-sha256",
@@ -351,13 +378,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     workflow.add_argument(
         "--accept-setup-eula",
         action="store_true",
-        help="Accept the Windows Setup license terms for the feature compatibility scan.",
+        help="Accept the Windows Setup license terms for the selected media.",
     )
     workflow.add_argument(
         "--no-rollback",
         dest="feature_rollback",
         action="store_false",
-        help="Preview a full feature upgrade with wuo rollback and backups skipped.",
+        help="Skip wuo rollback and backups for a full feature upgrade.",
+    )
+    workflow.add_argument(
+        "--backup-drive",
+        metavar="LETTER:",
+        help="Separate NTFS drive for the Windows and EFI backup before a full feature upgrade.",
     )
     workflow.add_argument(
         "--driver-cache",
@@ -513,13 +545,29 @@ def main(argv: Sequence[str] | None = None) -> int:
         args = parser.parse_args(argv)
         if args.command == "update":
             if args.feature_iso is not None:
-                if not args.dry_run:
-                    workflow.error("--feature-iso currently requires --dry-run")
                 if not args.iso_sha256 or not args.accept_setup_eula:
                     workflow.error(
                         "--feature-iso requires --iso-sha256 and --accept-setup-eula"
                     )
-            elif args.iso_sha256 or args.accept_setup_eula or not args.feature_rollback:
+                if args.backup_drive and not args.feature_rollback:
+                    workflow.error("Choose either --backup-drive or --no-rollback.")
+                preparing = not args.dry_run and (
+                    not args.only or "features" in args.only
+                )
+                if preparing and args.manual:
+                    workflow.error(
+                        "Use --dry-run to check a feature ISO in manual mode."
+                    )
+                if preparing and args.feature_rollback and not args.backup_drive:
+                    workflow.error(
+                        "A full feature upgrade requires --backup-drive unless --no-rollback is selected."
+                    )
+            elif (
+                args.iso_sha256
+                or args.accept_setup_eula
+                or not args.feature_rollback
+                or args.backup_drive
+            ):
                 workflow.error("ISO and feature rollback options require --feature-iso")
     except SystemExit as result:
         return int(result.code) if isinstance(result.code, int) else 1

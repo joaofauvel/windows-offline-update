@@ -504,6 +504,7 @@ class PreparedUpdates:
     monthly: list[Path] = field(default_factory=list)
     manual: list[ManualUpdate] = field(default_factory=list)
     security: list[Offer] = field(default_factory=list)
+    feature: feature_upgrade.FeatureImage | None = None
 
 
 async def _export_driver(
@@ -698,10 +699,12 @@ async def run_update(
     prepared: PreparedUpdates | None = None,
     feature_media: feature_upgrade.FeatureMedia | None = None,
 ) -> int:
-    if feature_media is not None and not dry_run:
-        raise ValueError("The feature compatibility scan requires a dry run.")
     if only and "features" not in only:
         feature_media = None
+    if feature_media is not None and not dry_run and prepared is None:
+        raise ValueError(
+            "Preparing a full feature upgrade requires the installed WinRE menu."
+        )
     print(
         f"Scanning Windows {identity.release} {identity.architecture} ({identity.build}.{identity.revision}) via Windows Update Agent…",
         flush=True,
@@ -739,9 +742,15 @@ async def run_update(
 
         try:
             with Menu(identity).feature_preview():
-                await feature_upgrade.check_feature(
-                    client, identity, setup_candidates or [], feature_media
+                image = await feature_upgrade.check_feature(
+                    client,
+                    identity,
+                    setup_candidates or [],
+                    feature_media,
+                    preview=dry_run,
                 )
+                if prepared is not None:
+                    prepared.feature = image
         except (OSError, ValueError, httpx.HTTPError) as error:
             print(f"Feature compatibility check incomplete: {error}")
             failures += max(1, len(setup_candidates or []))

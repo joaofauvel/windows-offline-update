@@ -10,17 +10,19 @@ from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
 from importlib.resources import as_file, files
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from . import bundle
 from .downloads import package_hashes
 from .target import TargetIdentity
 lazy from . import windows_updates
+lazy from .feature_upgrade import FeatureImage, FeatureMedia
 lazy from .hook_registry import HookRegistry
 lazy from .hook_selection import describe_selection, read_selection, resolve_selection
 lazy from .update import Offer
 
 MENU_PATH = bundle.JOBS_PATH.parent / "menu"
+_FEATURE_MENU = "feature-menu.version"
 
 
 def _id(value: str) -> str:
@@ -140,6 +142,137 @@ class Menu:
             windows_updates.require_completed_phase(self.target, self.root)
             yield
 
+    def stage_feature(
+        self,
+        media: FeatureMedia,
+        image: FeatureImage,
+        profile: Path | None,
+        *,
+        backup_drive: str | None,
+    ) -> Path:
+        """Prepare a single feature job and publish it to the installed WinRE menu."""
+        from dataclasses import replace
+
+        from .feature_upgrade import backup_feature, feature_setup_assets, prepare_media
+        from .recovery import render_feature_restore, render_feature_source_hooks
+        from .target import read_target
+
+        if media.rollback and backup_drive is None:
+            raise ValueError("Select a separate rollback drive before preparing Setup.")
+        with self._lock():
+            self._require_windows_complete_locked()
+            if self._pending_id() is not None:
+                raise ValueError("An update is already staged. Run wuo status.")
+            capability = self.root / _FEATURE_MENU
+            if not capability.is_file() or capability.read_bytes() != b"1\r\n":
+                raise ValueError(
+                    "Refresh the recovery menu with wuo remove and wuo setup before preparing a feature upgrade."
+                )
+            if read_target() != self.target:
+                raise ValueError(
+                    "The running Windows identity changed before preparation."
+                )
+            selected = read_selection(profile)
+            media = replace(media, iso=media.iso.resolve(strict=True))
+            job_id = uuid4()
+            job = self.job_state(str(job_id))
+            callback_dir = self.target.windows / "System32/update/runonce" / str(job_id)
+            request, callback = feature_setup_assets(
+                job_id, self.target, media, image, selected.hooks
+            )
+            job.mkdir()
+            _run(
+                [
+                    self.target.windows / "System32/icacls.exe",
+                    job,
+                    "/setowner",
+                    "*S-1-5-32-544",
+                ]
+            )
+            if profile is not None:
+                snapshot = job / "profile.toml"
+                metadata = profile.with_name("hooks.json")
+                if metadata.is_file():
+                    shutil.copyfile(profile, snapshot)
+                    shutil.copyfile(metadata, snapshot.with_name("hooks.json"))
+                else:
+                    resolve_selection((), profile, job)
+                captured = read_selection(snapshot)
+                if (captured.hooks, captured.origins) != (
+                    selected.hooks,
+                    selected.origins,
+                ):
+                    raise ValueError("The hook selection changed during preparation.")
+            (job / "feature.json").write_bytes(request)
+            if any(hook.phase == "pre" for hook in selected.hooks):
+                pre_hooks = job / "source-hooks.cmd"
+                pre_hooks.write_bytes(
+                    render_feature_source_hooks(
+                        selected.hooks, rollback=media.rollback
+                    ).encode("ascii")
+                )
+                (job / "source-hooks.sha256").write_bytes(
+                    f"{package_hashes(pre_hooks)[0]}\r\n".encode("ascii")
+                )
+            if media.rollback and backup_drive is not None:
+                receipt = backup_feature(self.target, job_id, backup_drive)
+                runner = job / "restore.cmd"
+                runner.write_bytes(
+                    render_feature_restore(
+                        str(job_id), self.target, image, receipt
+                    ).encode("ascii")
+                )
+                (job / "rollback.json").write_bytes(receipt)
+                (job / "restore.sha256").write_bytes(
+                    f"{package_hashes(runner)[0]}\r\n".encode("ascii")
+                )
+            callback_dir.mkdir(parents=True)
+            (callback_dir / "precommit.cmd").write_bytes(callback)
+            prepare_media(self.target, media, image)
+            continuation = job / "feature_upgrade.ps1"
+            continuation.write_bytes(
+                files("wuo").joinpath("feature_upgrade.ps1").read_bytes()
+            )
+            self._register_feature_task(str(job_id), continuation)
+            marker = f"{job_id}\r\n".encode("ascii")
+            (job / "target.id").write_bytes(marker)
+            (job / "feature.ready").write_bytes(marker)
+            pending = job / "pending.id"
+            pending.write_bytes(marker)
+            os.replace(pending, self.root / "pending.id")
+            return job
+
+    def _register_feature_task(self, job: str, continuation: Path) -> None:
+        system32 = self.target.windows / "System32"
+        powershell = system32 / "WindowsPowerShell/v1.0/powershell.exe"
+        action = subprocess.list2cmdline(
+            [
+                str(powershell),
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(continuation),
+                "-FinalizeJob",
+                job,
+            ]
+        )
+        _run(
+            [
+                system32 / "schtasks.exe",
+                "/Create",
+                "/TN",
+                f"wuo-feature-{job}",
+                "/TR",
+                action,
+                "/SC",
+                "ONSTART",
+                "/RU",
+                "SYSTEM",
+            ]
+        )
+
     def publish(self, source: Path) -> Path:
         with self._lock():
             self._require_windows_complete_locked()
@@ -214,6 +347,8 @@ class Menu:
 
     def _verify_completed(self, job_id: str) -> bool:
         state = self.job_state(job_id)
+        if (state / "feature.ready").exists():
+            return self._verify_feature(job_id, state)
         marker = _read_id(state / "state.ready")
         if marker is None:
             return False
@@ -226,6 +361,56 @@ class Menu:
         plan = json.loads((prepared / "plan.json").read_text(encoding="utf-8"))
         kind = "Driver" if plan.get("kind") == "drivers" else "Windows package"
         print(f"{kind} recovery job verified. Log: {state / 'recovery.log'}")
+        return True
+
+    def _verify_feature(self, job_id: str, state: Path) -> bool:
+        if _read_id(state / "feature.ready") != job_id:
+            raise ValueError("The pending feature upgrade marker is invalid.")
+        request = json.loads((state / "feature.json").read_bytes())
+        if (
+            not isinstance(request, dict)
+            or request.get("id") != job_id
+            or request.get("machine") != self.target.machine_guid
+        ):
+            raise ValueError(
+                "The pending feature upgrade belongs to another installation."
+            )
+        if request["source"] == f"{self.target.build}.{self.target.revision}":
+            return False
+        image = request["image"]
+        if (
+            self.target.build != image["build"]
+            or self.target.revision < image["revision"]
+            or self.target.architecture != image["architecture"]
+            or _read_id(state / "precommit.done") != job_id
+        ):
+            raise ValueError(
+                f"The installed feature upgrade could not be verified. Review {state}."
+            )
+        profile = state / "profile.toml"
+        hooks = read_selection(profile if profile.is_file() else None).hooks
+        if hooks:
+            import winreg
+
+            for hook in hooks:
+                if hook.phase != "post":
+                    continue
+                prefix = (
+                    r"SYSTEM\CurrentControlSet"
+                    if hook.scope == "control-set"
+                    else "SYSTEM"
+                )
+                with winreg.OpenKey(
+                    winreg.HKEY_LOCAL_MACHINE, f"{prefix}\\{hook.key}"
+                ) as key:
+                    value, kind = winreg.QueryValueEx(key, hook.name)
+                if kind != winreg.REG_DWORD or value != hook.value:
+                    raise ValueError(
+                        f"The installed hook {hook.key} / {hook.name} does not match. Review {state}."
+                    )
+        print(
+            f"Feature upgrade verified on build {self.target.build}.{self.target.revision}. Log: {state / 'precommit.log'}"
+        )
         return True
 
     def status(self) -> None:
@@ -243,6 +428,22 @@ class Menu:
                 (self.root / "pending.id").unlink()
                 return
             state = self.job_state(job_id)
+            if (state / "feature.ready").is_file():
+                if _read_id(state / "precommit.failed") == job_id:
+                    print(
+                        f"Setup stopped at the precommit check. The original Windows is active. Log: {state / 'precommit.log'}"
+                    )
+                elif (state / "claimed.id").is_file():
+                    print(
+                        f"Windows Setup started the feature upgrade. Review {state / 'precommit.log'}."
+                    )
+                elif (state / "authorized.id").is_file():
+                    print(
+                        "WinRE authorized the feature upgrade. Windows will resume the staged job."
+                    )
+                else:
+                    print("Feature upgrade staged. Run wuo update to enter recovery.")
+                return
             if (state / "apply.started").exists():
                 raise ValueError(
                     f"Offline servicing was interrupted. See {state / 'recovery.log'}."
@@ -251,6 +452,14 @@ class Menu:
 
     def discard(self) -> None:
         with self._lock():
+            job_id = self._pending_id()
+            if (
+                job_id is not None
+                and (self.job_state(job_id) / "feature.ready").is_file()
+            ):
+                raise ValueError(
+                    "The feature upgrade has native Setup state. Review wuo status before clearing it."
+                )
             (self.root / "pending.id").unlink(missing_ok=True)
         print("Pending job cleared. Its files and logs are retained.")
 
@@ -281,6 +490,13 @@ class Menu:
                 (self.root / "pending.id").unlink()
                 return True
             state = self.job_state(job_id)
+            if (state / "feature.ready").is_file() and any(
+                (state / name).is_file() for name in ("authorized.id", "claimed.id")
+            ):
+                print(
+                    "The feature upgrade has already been authorized. Run wuo status."
+                )
+                return False
             if (state / "apply.started").exists():
                 raise ValueError(
                     f"Offline servicing was interrupted. See {state / 'recovery.log'}."
@@ -354,6 +570,17 @@ class Menu:
                     )
         job_id = self._pending_id()
         if job_id is not None:
+            state = self.job_state(job_id)
+            if (state / "feature.ready").is_file():
+                feature_profile = state / "profile.toml"
+                print(f"Pending feature job {job_id} uses these captured hooks")
+                describe_selection(
+                    read_selection(
+                        feature_profile if feature_profile.is_file() else None
+                    ),
+                    registry,
+                )
+                return
             pending = self.root / "bundles" / job_id
             if not (pending / "plan.json").is_file():
                 print(f"Pending job {job_id}: hook selection unavailable.")
@@ -462,12 +689,15 @@ class Menu:
                 command.extend(("-Profile", snapshot))
                 command.extend(("-HookMetadata", snapshot.with_name("hooks.json")))
             output = _run(command)
+        capability = self.root / _FEATURE_MENU
+        if action == "install":
+            capability.write_bytes(b"1\r\n")
+        else:
+            capability.unlink(missing_ok=True)
         if output.strip():
             print(output.strip())
 
     def _save_selection(self, profile: Path | None) -> None:
-        from uuid import uuid4
-
         from .downloads import atomic_json
 
         if profile is None:
