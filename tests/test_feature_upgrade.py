@@ -312,6 +312,39 @@ def test_preview_isolated_from_staging_and_restart(
     assert len(calls) == 2
 
 
+@pytest.mark.skipif(POWERSHELL is None, reason="Windows PowerShell is required")
+def test_scan_media_uses_native_modules_with_inherited_module_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    custom_modules = tmp_path / "PowerShell" / "Modules"
+    custom_modules.mkdir(parents=True)
+    monkeypatch.setenv("PSMODULEPATH", str(custom_modules))
+    monkeypatch.setattr(feature, "files", lambda _: tmp_path)
+    (tmp_path / "feature_upgrade.ps1").write_text(
+        """
+$ErrorActionPreference = 'Stop'
+$hash = Get-FileHash -LiteralPath $env:WUO_FEATURE_ISO -Algorithm SHA256
+if ($hash.Hash -ne $env:WUO_FEATURE_SHA256) { throw 'Expected SHA-256 mismatch' }
+Get-Command Get-AuthenticodeSignature, Get-DiskImage, Get-WindowsImage | Out-Null
+@{
+    setup_code = -1047526896
+    index = 1
+    edition = 'Core'
+    architecture = $env:WUO_FEATURE_ARCH
+    language = 'en-US'
+    build = 26300
+    revision = 9457
+} | ConvertTo-Json -Compress
+""",
+        encoding="ascii",
+    )
+    iso = tmp_path / "fixture.iso"
+    iso.write_bytes(b"fixture")
+    identity = replace(TARGET, windows=Path(os.environ["SYSTEMROOT"]))
+    feature._scan_media(identity, iso, hashlib.sha256(b"fixture").hexdigest(), None)
+    assert os.environ["PSMODULEPATH"] == str(custom_modules)
+
+
 HARNESS = r"""
 $ErrorActionPreference = 'Stop'
 Import-Module Microsoft.PowerShell.Utility

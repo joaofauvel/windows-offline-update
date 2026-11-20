@@ -120,6 +120,12 @@ def _scan_media(
     if not native.is_dir():
         native = identity.windows / "System32"
     powershell = native / "WindowsPowerShell/v1.0/powershell.exe"
+    # PowerShell 7 modules can shadow the native Windows PowerShell modules.
+    native_env = {
+        name: value
+        for name, value in os.environ.items()
+        if name.upper() != "PSMODULEPATH"
+    }
     with (
         as_file(files("wuo").joinpath("feature_upgrade.ps1")) as script,
         subprocess.Popen(
@@ -133,7 +139,7 @@ def _scan_media(
                 script,
             ],
             env={
-                **os.environ,
+                **native_env,
                 "WUO_FEATURE_ISO": str(iso),
                 "WUO_FEATURE_SHA256": digest,
                 "WUO_FEATURE_SOURCE": f"{identity.build}.{identity.revision}",
