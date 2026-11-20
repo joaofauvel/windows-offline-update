@@ -30,6 +30,16 @@ class FeatureMedia:
     rollback: bool = True
 
 
+@dataclass(frozen=True, slots=True)
+class FeatureImage:
+    index: int
+    build: int
+    revision: int
+    edition: str
+    architecture: str
+    language: str
+
+
 def offered_release(offer: Offer, identity: TargetIdentity) -> str | None:
     """Find offers eligible for an explicitly requested Setup preview."""
     if (
@@ -107,7 +117,7 @@ def require_scan_success(code: int) -> None:
 
 def _scan_media(
     identity: TargetIdentity, iso: Path, digest: str, build: int | None
-) -> None:
+) -> FeatureImage:
     iso = iso.resolve(strict=True)
     if (
         not re.fullmatch(r"[A-Za-z]:", iso.drive)
@@ -165,7 +175,9 @@ def _scan_media(
         not isinstance(report, dict)
         or type(report.get("setup_code")) is not int
         or type(report.get("index")) is not int
+        or report["index"] < 1
         or type(report.get("revision")) is not int
+        or report["revision"] < 0
         or type(report.get("build")) is not int
         or report["build"] <= identity.build
         or (build is not None and report["build"] != build)
@@ -175,10 +187,19 @@ def _scan_media(
     ):
         raise ValueError("The native feature check returned an invalid result.")
     require_scan_success(report["setup_code"])
-    print(
-        f"  Image {report['index']}, {report['edition']}, {report['architecture']}, "
-        f"{report['language']}, build {report['build']}.{report['revision']}."
+    image = FeatureImage(
+        index=report["index"],
+        build=report["build"],
+        revision=report["revision"],
+        edition=report["edition"],
+        architecture=report["architecture"],
+        language=report["language"],
     )
+    print(
+        f"  Image {image.index}, {image.edition}, {image.architecture}, "
+        f"{image.language}, build {image.build}.{image.revision}."
+    )
+    return image
 
 
 async def check_feature(
@@ -186,7 +207,7 @@ async def check_feature(
     identity: TargetIdentity,
     offers: list[Offer],
     media: FeatureMedia,
-) -> None:
+) -> FeatureImage:
     if not re.fullmatch(r"[0-9a-fA-F]{64}", media.sha256):
         raise ValueError("Supply the ISO's Microsoft-published SHA-256 digest.")
     if identity.installation_type.casefold() != "client" or identity.build < 22000:
@@ -208,8 +229,9 @@ async def check_feature(
             "Checking explicitly supplied media without a Windows Update feature offer."
         )
     print("Checking the ISO and running Windows Setup compatibility scan…", flush=True)
-    await asyncio.to_thread(
+    image = await asyncio.to_thread(
         _scan_media, identity, media.iso, media.sha256.lower(), build
     )
     print("Windows Setup confirmed compatibility with keeping apps and data.")
     print("Feature upgrade check only. No installation or recovery job was started.")
+    return image

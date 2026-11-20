@@ -341,7 +341,17 @@ Get-Command Get-AuthenticodeSignature, Get-DiskImage, Get-WindowsImage | Out-Nul
     iso = tmp_path / "fixture.iso"
     iso.write_bytes(b"fixture")
     identity = replace(TARGET, windows=Path(os.environ["SYSTEMROOT"]))
-    feature._scan_media(identity, iso, hashlib.sha256(b"fixture").hexdigest(), None)
+    image = feature._scan_media(
+        identity, iso, hashlib.sha256(b"fixture").hexdigest(), None
+    )
+    assert image == feature.FeatureImage(
+        index=1,
+        build=26300,
+        revision=9457,
+        edition="Core",
+        architecture="x64",
+        language="en-US",
+    )
     assert os.environ["PSMODULEPATH"] == str(custom_modules)
 
 
