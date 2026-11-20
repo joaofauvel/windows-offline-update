@@ -196,6 +196,27 @@ before the first replacement kernel boot. The original registry kept its
 previous values. The rehearsal used a lab-only launcher and task. The
 released job lifecycle and automatic rollback still need validation.
 
+A split-EFI Pro guest then completed a real upgrade from retail 25H2 build
+26200.6584 to 26H2 build 26300.9457. The installed WinRE menu authorized the
+job and the source Windows startup task resumed Setup. The stock SafeOS
+phase finished with all five USB4 service values already set to 0 in the
+replacement SYSTEM hive. Setup finished, and the replacement kept those
+values, the test application, and the user's test document. The original
+SYSTEM hive retained the original values.
+
+A fork of the same deferred stage ran the packaged precommit renderer with
+an intentionally incorrect USB4 precondition. Native Setup recorded
+callback exit 77 before commit. The original volume retained its 25H2 build
+and all five original service values, and a cold start with the virtual
+optical drives detached reached the original Windows lock screen.
+
+The real upgrade changed files in `EFI\Microsoft\Boot`, the Microsoft
+recovery BCD and journal, and the standard `EFI\Boot\bootx64.efi` fallback.
+A split EFI disk alone does not protect a dual boot loader using the fallback
+path. Snapshot the original fallback and recovery BCD as part of the job.
+Validate preservation of a third-party fallback and firmware boot order
+before presenting a Limine test on the physical installation.
+
 A separate rollback rehearsal restored a fork of that committed same-build
 guest. Windows Backup created a VSS image of the original Windows volume.
 The independent recovery image verified the replacement OS was pending its
@@ -212,9 +233,8 @@ WinRE menu without a hypervisor timing dependency. Test a real keep-apps version
 upgrade, single-disk and split EFI, an interrupted preparation, a failed hook,
 fallback when SafeOS cannot start, and rollback. Check that the experimental
 launcher never propagates to the installed recovery image. Any real keep-apps
-version upgrade can supply the generic RC evidence. A genuine 25H2 Pro source
-is still needed for the requested 25H2 to 26H2 validation. Physical USB4 and
-Limine use need a recoverable test before being presented as supported.
+version upgrade can supply the generic RC evidence. Physical USB4 and Limine
+use need a recoverable test before being presented as supported.
 
 Microsoft documents [Setup command options](https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/windows-setup-command-line-options)
 and [WinPE launch ordering](https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/winpeshlini-reference-launching-an-app-when-winpe-starts).

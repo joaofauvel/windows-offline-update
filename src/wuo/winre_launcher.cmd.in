@@ -37,6 +37,9 @@ set "HASHES=%BUNDLE%\hashes.txt"
 call :plain "%ROOT%\jobs" || goto bad_job
 call :plain "%JOB%" || goto bad_job
 call :match_marker "%JOB%\target.id" %JOB_ID% || goto bad_job
+set "FEATURE_ROOT=%TARGET%\Windows\System32\wuo"
+set "FEATURE=%FEATURE_ROOT%\features\%JOB_ID%"
+if exist "%FEATURE%\feature.ready" goto authorize_feature
 if exist "%JOB%\apply.started" goto started
 if exist "%JOB%\state.ready" goto started
 call :plain "%MENU%\bundles" || goto bad_bundle
@@ -46,6 +49,22 @@ call :verify_bundle || goto bad_bundle
 call "%BUNDLE%\recovery.cmd" check %TARGET% %EFI% || goto failed_check
 call "%BUNDLE%\recovery.cmd" apply %TARGET% %EFI% || goto failed_apply
 call :match_marker "%JOB%\state.ready" %JOB_ID% || goto failed_apply
+set "APPLIED=1"
+goto cleanup
+
+:authorize_feature
+call :plain "%FEATURE_ROOT%" || goto bad_job
+call :plain "%FEATURE_ROOT%\features" || goto bad_job
+call :plain "%FEATURE%" || goto bad_job
+call :match_marker "%FEATURE%\feature.ready" %JOB_ID% || goto bad_job
+if exist "%JOB%\apply.started" goto started_feature
+if exist "%JOB%\state.ready" goto started_feature
+if exist "%FEATURE%\authorized.id" goto started_feature
+if exist "%FEATURE%\claimed.id" goto started_feature
+call :plain "%FEATURE%\feature.json" || goto bad_job
+call :plain "%TARGET%\$WINDOWS.~BT\NewOS\Windows\System32\Config\SYSTEM" || goto bad_job
+(>"%FEATURE%\authorize.tmp" echo(%JOB_ID%) || goto bad_job
+ren "%FEATURE%\authorize.tmp" authorized.id || goto bad_job
 set "APPLIED=1"
 goto cleanup
 
@@ -213,6 +232,9 @@ echo The pending offline update does not match a prepared servicing job.
 goto cleanup
 :started
 echo This offline update has already started. Review "%JOB%\recovery.log".
+goto cleanup
+:started_feature
+echo This feature upgrade already has a continuation in progress. Run wuo status from Windows.
 goto cleanup
 :bad_bundle
 echo The staged bundle could not be verified. Return to Windows to review the staged update.

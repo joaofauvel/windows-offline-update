@@ -5,17 +5,21 @@ import json
 import os
 import re
 import subprocess
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from hashlib import sha256
 from importlib.resources import as_file, files
 from pathlib import Path
 from typing import TYPE_CHECKING
+from uuid import UUID
 
 import httpx
 from bs4 import BeautifulSoup
 
+from .recovery import render_feature_precommit
 from .target import TargetIdentity, read_target
 
 if TYPE_CHECKING:
+    from .hooks import Hook
     from .update import Offer
 
 _RELEASE_HISTORY = "https://learn.microsoft.com/en-us/windows/release-health/windows11-release-information"
@@ -38,6 +42,34 @@ class FeatureImage:
     edition: str
     architecture: str
     language: str
+
+
+def feature_setup_assets(
+    job: UUID,
+    identity: TargetIdentity,
+    media: FeatureMedia,
+    image: FeatureImage,
+    hooks: tuple[Hook, ...],
+) -> tuple[bytes, bytes]:
+    """Build the request and callback for the protected Windows continuation."""
+    if not re.fullmatch(r"[0-9a-fA-F]{64}", media.sha256):
+        raise ValueError("Supply the ISO's Microsoft-published SHA-256 digest.")
+    if image.architecture != identity.architecture:
+        raise ValueError("The verified image does not match the running architecture.")
+    callback = render_feature_precommit(
+        str(job), identity, image, hooks, rollback=media.rollback
+    ).encode("ascii")
+    request = {
+        "schema": 1,
+        "id": str(job),
+        "machine": str(UUID(identity.machine_guid)),
+        "source": f"{identity.build}.{identity.revision}",
+        "iso": str(media.iso),
+        "sha256": media.sha256.lower(),
+        "image": asdict(image),
+        "callback_sha256": sha256(callback).hexdigest(),
+    }
+    return json.dumps(request, sort_keys=True).encode("ascii"), callback
 
 
 def offered_release(offer: Offer, identity: TargetIdentity) -> str | None:
@@ -115,8 +147,13 @@ def require_scan_success(code: int) -> None:
     raise ValueError(f"{message} (0x{code:08X}). Check the Windows Setup Panther logs.")
 
 
-def _scan_media(
-    identity: TargetIdentity, iso: Path, digest: str, build: int | None
+def _run_media(
+    identity: TargetIdentity,
+    iso: Path,
+    digest: str,
+    build: int | None,
+    *,
+    expected: FeatureImage | None = None,
 ) -> FeatureImage:
     iso = iso.resolve(strict=True)
     if (
@@ -136,6 +173,17 @@ def _scan_media(
         for name, value in os.environ.items()
         if name.upper() != "PSMODULEPATH"
     }
+    operation = "feature compatibility check"
+    arguments = []
+    if expected is not None:
+        operation = "deferred feature preparation"
+        arguments.append("-Prepare")
+        native_env.update(
+            WUO_FEATURE_INDEX=str(expected.index),
+            WUO_FEATURE_REVISION=str(expected.revision),
+            WUO_FEATURE_EDITION=expected.edition,
+            WUO_FEATURE_LANGUAGE=expected.language,
+        )
     with (
         as_file(files("wuo").joinpath("feature_upgrade.ps1")) as script,
         subprocess.Popen(
@@ -147,6 +195,7 @@ def _scan_media(
                 "Bypass",
                 "-File",
                 script,
+                *arguments,
             ],
             env={
                 **native_env,
@@ -167,9 +216,9 @@ def _scan_media(
                 stdout, stderr = process.communicate(timeout=30)
                 break
             except subprocess.TimeoutExpired:
-                print("The feature compatibility check is still running…", flush=True)
+                print(f"The {operation} is still running…", flush=True)
     if process.returncode:
-        raise ValueError(stderr.strip() or "The native feature check failed.")
+        raise ValueError(stderr.strip() or f"The native {operation} failed.")
     report = json.loads(stdout)
     if (
         not isinstance(report, dict)
@@ -186,7 +235,6 @@ def _scan_media(
         or not isinstance(report.get("language"), str)
     ):
         raise ValueError("The native feature check returned an invalid result.")
-    require_scan_success(report["setup_code"])
     image = FeatureImage(
         index=report["index"],
         build=report["build"],
@@ -195,11 +243,34 @@ def _scan_media(
         architecture=report["architecture"],
         language=report["language"],
     )
+    if expected is None:
+        require_scan_success(report["setup_code"])
+    elif report["setup_code"] != 0 or image != expected:
+        raise ValueError("Windows Setup did not prepare the verified image.")
     print(
         f"  Image {image.index}, {image.edition}, {image.architecture}, "
         f"{image.language}, build {image.build}.{image.revision}."
     )
     return image
+
+
+def _scan_media(
+    identity: TargetIdentity, iso: Path, digest: str, build: int | None
+) -> FeatureImage:
+    return _run_media(identity, iso, digest, build)
+
+
+def prepare_media(
+    identity: TargetIdentity, media: FeatureMedia, image: FeatureImage
+) -> FeatureImage:
+    """Prepare the verified image in Windows without committing the upgrade."""
+    if image.build <= identity.build or image.architecture != identity.architecture:
+        raise ValueError(
+            "The verified feature image does not match the running Windows."
+        )
+    return _run_media(
+        identity, media.iso, media.sha256.lower(), image.build, expected=image
+    )
 
 
 async def check_feature(

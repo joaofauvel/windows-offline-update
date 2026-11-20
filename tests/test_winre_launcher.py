@@ -47,6 +47,24 @@ class LauncherLab(NamedTuple):
         )
 
 
+def test_feature_job_authorizes_once_and_restarts(launcher: LauncherLab) -> None:
+    feature = launcher.root / "features" / JOB
+    feature.mkdir(parents=True)
+    (feature / "feature.ready").write_bytes(f"{JOB}\r\n".encode("ascii"))
+    (feature / "feature.json").write_text("{}", encoding="ascii")
+    staged = launcher.root / "NewOS/Windows/System32/Config/SYSTEM"
+    staged.parent.mkdir(parents=True)
+    staged.touch()
+
+    assert launcher.run().returncode == 0
+    assert (feature / "authorized.id").read_bytes() == f"{JOB}\r\n".encode("ascii")
+    assert "Reboot" in launcher.trace
+    assert not (feature / "claimed.id").exists()
+
+    assert launcher.run().returncode != 0
+    assert launcher.trace.count("Reboot") == 1
+
+
 @pytest.fixture
 def launcher(tmp_path: Path) -> LauncherLab:
     if os.name != "nt":
@@ -68,6 +86,8 @@ def launcher(tmp_path: Path) -> LauncherLab:
         r"%SYS%\..\Temp\WUO-": r"%WUO_TEST_ROOT%\WUO-",
         r"%TARGET%\ProgramData\WinOfflineUpdate": r"%WUO_TEST_ROOT%",
         r"%TARGET%\ProgramData": r"%WUO_TEST_ROOT%",
+        r"%TARGET%\Windows\System32\wuo": r"%WUO_TEST_ROOT%",
+        r"%TARGET%\$WINDOWS.~BT\NewOS\Windows": r"%WUO_TEST_ROOT%\NewOS\Windows",
         r'"%~dp0findstr.exe"': f'"{system / "findstr.exe"}"',
         r'"%~dp0certutil.exe"': f'"{system / "certutil.exe"}"',
     }

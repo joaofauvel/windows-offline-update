@@ -1,6 +1,7 @@
 """Render a bounded stock WinRE recovery job."""
 
 from importlib.resources import files
+from re import fullmatch
 from typing import TYPE_CHECKING
 from uuid import UUID
 
@@ -8,7 +9,9 @@ from .downloads import safe_name
 
 if TYPE_CHECKING:
     from .bundle import BundlePlan
+    from .feature_upgrade import FeatureImage
     from .hooks import Hook
+    from .target import TargetIdentity
 
 
 def _hook_lines(hooks: tuple[Hook, ...]) -> str:
@@ -37,6 +40,51 @@ def _hook_lines(hooks: tuple[Hook, ...]) -> str:
         )
     )
     return "\n".join(lines)
+
+
+def _hook_helpers(system_hive: str, *, backup: bool) -> str:
+    template = files("wuo").joinpath("registry_hooks.cmd.in").read_text(encoding="ascii")
+    backup_line = (
+        r'"%SYS%\reg.exe" save "%HOOK_HIVE%" "%JOB%\%PHASE%-SYSTEM.hiv"'
+        r' >>"%LOG%" 2>&1 || goto hook_failed' + "\n"
+        if backup
+        else ""
+    )
+    return (
+        template.removesuffix("\n")
+        .replace("@@SYSTEM_HIVE@@", system_hive)
+        .replace("@@BACKUP_LINE@@", backup_line)
+    )
+
+
+def render_feature_precommit(
+    job: str,
+    owner: TargetIdentity,
+    image: FeatureImage,
+    hooks: tuple[Hook, ...],
+    *,
+    rollback: bool,
+) -> str:
+    """Render the Windows Setup callback that checks and edits staged NewOS."""
+    if not fullmatch(r"[A-Za-z0-9]{1,80}", image.edition):
+        raise ValueError("Invalid Windows Setup image edition.")
+    if image.build <= owner.build or not 0 <= image.revision <= 0xFFFFFFFF:
+        raise ValueError("Invalid Windows Setup target build or revision.")
+    template = files("wuo").joinpath("feature_precommit.cmd.in").read_text(encoding="ascii")
+    replacements = {
+        "JOB": str(UUID(job)),
+        "MACHINE": str(UUID(owner.machine_guid)),
+        "SOURCE_BUILD": str(owner.build),
+        "SOURCE_REVISION": hex(owner.revision),
+        "TARGET_BUILD": str(image.build),
+        "TARGET_REVISION": hex(image.revision),
+        "TARGET_EDITION": image.edition,
+        "HOOKS": _hook_lines(tuple(hook for hook in hooks if hook.phase == "post")),
+        "HOOK_HELPERS": _hook_helpers(r"%NEWOS%\System32\Config\SYSTEM", backup=rollback),
+    }
+    for name, value in replacements.items():
+        template = template.replace(f"@@{name}@@", value)
+    return template.replace("\n", "\r\n")
 
 
 def render_runner(plan: BundlePlan) -> str:
@@ -121,6 +169,9 @@ def render_runner(plan: BundlePlan) -> str:
         ),
         "POST_HOOKS": _hook_lines(
             tuple(hook for hook in plan.hooks if hook.phase == "post")
+        ),
+        "HOOK_HELPERS": _hook_helpers(
+            r"%TARGET%\Windows\System32\Config\SYSTEM", backup=True
         ),
     }
     for name, value in replacements.items():

@@ -14,7 +14,9 @@ from httpx import AsyncClient
 
 from wuo import cli, update
 from wuo import feature_upgrade as feature
+from wuo.hooks import Hook
 from wuo.models import Update, UpdateFile
+from wuo.recovery import render_feature_precommit
 from wuo.target import TargetIdentity
 from wuo.update import Offer
 from wuo.winre_menu import Menu
@@ -25,6 +27,46 @@ TARGET = TargetIdentity(
 OFFER = Offer(str(UUID(int=1)), "Windows 11, version 26H2", "features", revision=4)
 POWERSHELL = shutil.which("powershell.exe")
 SCRIPT = Path(__file__).parents[1] / "src/wuo/feature_upgrade.ps1"
+
+
+def test_feature_precommit_renders_only_replacement_hooks() -> None:
+    owner = replace(TARGET, machine_guid=str(UUID(int=5)))
+    image = feature.FeatureImage(6, 26300, 9457, "Professional", "x64", "en-US")
+    job = str(UUID(int=8))
+    script = render_feature_precommit(
+        job,
+        owner,
+        image,
+        (
+            Hook("pre", r"Services\OldOnly", "Start", 0),
+            Hook("post", r"Services\UASPStor", "Start", 0, expected=3),
+        ),
+        rollback=False,
+    )
+    assert "@@" not in script
+    assert "OldOnly" not in script
+    assert job in script
+    assert r"%SYSTEMDRIVE%\$WINDOWS.~BT\NewOS\Windows" in script
+    assert r"Services\UASPStor" in script
+    assert 'set "HOOK_EXPECTED=0x3"' in script
+    assert r"X:\Windows\System32\reg.exe" not in script
+    assert 'reg.exe" save' not in script
+    assert script.index("call :apply_hooks") < script.index('" precommit.done')
+
+
+def test_feature_asset_request_pins_callback_and_verified_media() -> None:
+    owner = replace(TARGET, machine_guid=str(UUID(int=5)))
+    image = feature.FeatureImage(6, 26300, 9457, "Professional", "x64", "en-US")
+    media = feature.FeatureMedia(Path("D:/Windows 11.iso"), "AB" * 32)
+    job = UUID(int=9)
+    request, callback = feature.feature_setup_assets(job, owner, media, image, ())
+    manifest = json.loads(request)
+    assert manifest["source"] == "26200.9457"
+    assert manifest["image"]["index"] == image.index
+    assert manifest["id"] == str(job)
+    assert manifest["iso"] == str(media.iso)
+    assert manifest["sha256"] == "ab" * 32
+    assert manifest["callback_sha256"] == hashlib.sha256(callback).hexdigest()
 
 
 def test_only_one_new_full_feature_offer_is_eligible() -> None:
@@ -355,6 +397,36 @@ Get-Command Get-AuthenticodeSignature, Get-DiskImage, Get-WindowsImage | Out-Nul
     assert os.environ["PSMODULEPATH"] == str(custom_modules)
 
 
+@pytest.mark.skipif(POWERSHELL is None, reason="Windows PowerShell is required")
+def test_prepare_media_passes_the_verified_image_to_the_native_runner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(feature, "files", lambda _: tmp_path)
+    (tmp_path / "feature_upgrade.ps1").write_text(
+        """
+param([switch]$Prepare)
+$ErrorActionPreference = 'Stop'
+if (!$Prepare) { throw 'Expected deferred preparation' }
+@{
+    setup_code = 0
+    index = [int]$env:WUO_FEATURE_INDEX
+    edition = $env:WUO_FEATURE_EDITION
+    architecture = $env:WUO_FEATURE_ARCH
+    language = $env:WUO_FEATURE_LANGUAGE
+    build = [int]$env:WUO_FEATURE_BUILD
+    revision = [int]$env:WUO_FEATURE_REVISION
+} | ConvertTo-Json -Compress
+""",
+        encoding="ascii",
+    )
+    iso = tmp_path / "fixture.iso"
+    iso.write_bytes(b"fixture")
+    identity = replace(TARGET, windows=Path(os.environ["SYSTEMROOT"]))
+    selected = feature.FeatureImage(6, 26300, 9457, "Professional", "x64", "en-US")
+    media = feature.FeatureMedia(iso, hashlib.sha256(b"fixture").hexdigest())
+    assert feature.prepare_media(identity, media, selected) == selected
+
+
 HARNESS = r"""
 $ErrorActionPreference = 'Stop'
 Import-Module Microsoft.PowerShell.Utility
@@ -375,6 +447,9 @@ function New-Object { param($ComObject) @{RebootRequired=$false} }
 function Test-Path {
     param($Path, $LiteralPath, $PathType)
     if ($Path -like 'HKLM:*') { return $false }
+    if ($LiteralPath -like '*NewOS\Windows\System32\Config\SYSTEM') {
+        return $script:setupPrepared -and $env:WUO_TEST_STAGE_READY -eq '1'
+    }
     Microsoft.PowerShell.Management\Test-Path -LiteralPath $LiteralPath -PathType $PathType
 }
 function Get-DiskImage { param($ImagePath, $StorageType) @{Attached=$false} }
@@ -402,6 +477,14 @@ function Mock-Dism {
     'Default system UI language : en-US'
 }
 Set-Alias "$env:SystemRoot\System32\dism.exe" Mock-Dism
+function Mock-BcdEdit {
+    $global:LASTEXITCODE = 0
+    if ($script:setupPrepared -and $env:WUO_TEST_BOOT_CHANGED -eq '1') {
+        return 'bootmgr after shutdown'
+    }
+    'bootmgr before shutdown'
+}
+Set-Alias "$env:SystemRoot\System32\bcdedit.exe" Mock-BcdEdit
 function Get-WindowsImage {
     param($ImagePath, $Index)
     if ($Index -eq 0) { return @{ImageIndex=6} }
@@ -415,10 +498,76 @@ function Start-Process {
     param($FilePath, $WorkingDirectory, [switch]$Wait, [switch]$PassThru, $ArgumentList)
     if ($FilePath -ne "${letter}:\setup.exe" -or !$Wait -or !$PassThru) { throw 'Wrong Setup invocation' }
     Add-Content $env:WUO_CALLS ($ArgumentList -join ' ')
+    if ($env:WUO_TEST_PREPARE -eq '1') {
+        $script:setupPrepared = $true
+        return @{ExitCode=0}
+    }
     return @{ExitCode=-1047526896}
 }
-& $env:WUO_SCRIPT
+if ($env:WUO_TEST_PREPARE -eq '1') { & $env:WUO_SCRIPT -Prepare }
+else { & $env:WUO_SCRIPT }
 """
+
+
+@pytest.mark.skipif(POWERSHELL is None, reason="Windows PowerShell is required")
+@pytest.mark.parametrize(
+    ("index", "stage_ready", "boot_changed"),
+    [(6, True, False), (1, True, False), (6, False, False), (6, True, True)],
+)
+def test_native_prepare_rechecks_image_and_deferred_state(
+    tmp_path: Path, index: int, stage_ready: bool, boot_changed: bool
+) -> None:
+    assert POWERSHELL is not None
+    media = tmp_path / "media"
+    (media / "sources").mkdir(parents=True)
+    (media / "sources/install.wim").touch()
+    iso = tmp_path / "fixture.iso"
+    iso.write_bytes(b"fixture")
+    harness = tmp_path / "harness.ps1"
+    harness.write_text(HARNESS, encoding="utf-8")
+    calls = tmp_path / "calls.txt"
+    result = subprocess.run(
+        [
+            POWERSHELL,
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            harness,
+        ],
+        env={
+            **os.environ,
+            "WUO_SCRIPT": str(SCRIPT),
+            "WUO_FIXTURE": str(media),
+            "WUO_CALLS": str(calls),
+            "WUO_FEATURE_ISO": str(iso),
+            "WUO_FEATURE_SHA256": hashlib.sha256(b"fixture").hexdigest(),
+            "WUO_FEATURE_SOURCE": "26200.9457",
+            "WUO_FEATURE_BUILD": "26300",
+            "WUO_FEATURE_ARCH": "x64",
+            "WUO_FEATURE_INDEX": str(index),
+            "WUO_FEATURE_EDITION": "Professional",
+            "WUO_FEATURE_LANGUAGE": "en-US",
+            "WUO_FEATURE_REVISION": "9457",
+            "WUO_TEST_PREPARE": "1",
+            "WUO_TEST_STAGE_READY": str(int(stage_ready)),
+            "WUO_TEST_BOOT_CHANGED": str(int(boot_changed)),
+            "WUO_TEST_IMAGE_BUILD": "26300",
+        },
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    arguments = "/Auto Upgrade /Quiet /SkipFinalize /DynamicUpdate Disable /EULA Accept /ImageIndex 6"
+    expected = ["mount", arguments, "dismount"] if index == 6 else ["mount", "dismount"]
+    assert calls.read_text().splitlines() == expected, result.stderr
+    if index == 6 and stage_ready and not boot_changed:
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout)["setup_code"] == 0
+    else:
+        assert result.returncode != 0
 
 
 @pytest.mark.skipif(POWERSHELL is None, reason="Windows PowerShell is required")
