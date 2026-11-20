@@ -155,6 +155,27 @@ order and ran the replacement kernel. A separate scratch EFI store alone
 therefore fails the release gate. A usable boot gate must prevent the
 replacement kernel from starting even if Setup changes firmware boot order.
 
+WinPE could attach a session-only VHDX and edit its EFI BCD by explicit path.
+BCDEdit rejected the VHDX's EFI partition as a system store with `/sysstore`.
+The experiment stopped before running Setup. This rules out the tested way to
+redirect Setup into a store the firmware would lose on power-off.
+
+A disposable same-build repair retained all five USB4 registry changes
+through stock SafeOS when the existing hook runner applied them to the
+staged NewOS SYSTEM hive. A second fork used Setup's documented pre-commit
+callback from the source Windows during `/Finalize`. Setup logged exit 0
+from the callback and the five staged values were already 0 at the first
+reboot. Stock SafeOS completed normally and the values remained 0 in the
+replacement SYSTEM hive before its kernel ran. The old Windows hive kept
+its original values. A fresh fork deliberately mismatched the first
+registry precondition. Setup received callback exit 77, ran its failure
+callback, returned `0xC19001E3`, and never requested the SafeOS reboot.
+The source hive and Boot Manager entry selection kept their original
+values, and a cold restart reached the source desktop. This approach
+relies on each boot-critical hook surviving the rest of Setup. The
+same-build evidence covers five registry values. Cross-version and
+other hook behavior still need testing.
+
 Before publishing an install-capable RC, run the workflow through the actual
 WinRE menu without a hypervisor timing dependency. Test a real keep-apps version
 upgrade, single-disk and split EFI, an interrupted preparation, a failed hook,
