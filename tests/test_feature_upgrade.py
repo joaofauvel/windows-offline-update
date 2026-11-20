@@ -745,13 +745,26 @@ else { & $env:WUO_SCRIPT }
 """
 
 
+@pytest.fixture
+def native_setup_harness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    # Match the native module environment used by the production launcher.
+    monkeypatch.delenv("PSMODULEPATH", raising=False)
+    harness = tmp_path / "harness.ps1"
+    harness.write_text(HARNESS, encoding="utf-8")
+    return harness
+
+
 @pytest.mark.skipif(POWERSHELL is None, reason="Windows PowerShell is required")
 @pytest.mark.parametrize(
     ("index", "stage_ready", "boot_changed"),
     [(6, True, False), (1, True, False), (6, False, False), (6, True, True)],
 )
 def test_native_prepare_rechecks_image_and_deferred_state(
-    tmp_path: Path, index: int, stage_ready: bool, boot_changed: bool
+    tmp_path: Path,
+    native_setup_harness: Path,
+    index: int,
+    stage_ready: bool,
+    boot_changed: bool,
 ) -> None:
     assert POWERSHELL is not None
     media = tmp_path / "media"
@@ -759,8 +772,6 @@ def test_native_prepare_rechecks_image_and_deferred_state(
     (media / "sources/install.wim").touch()
     iso = tmp_path / "fixture.iso"
     iso.write_bytes(b"fixture")
-    harness = tmp_path / "harness.ps1"
-    harness.write_text(HARNESS, encoding="utf-8")
     calls = tmp_path / "calls.txt"
     result = subprocess.run(
         [
@@ -770,7 +781,7 @@ def test_native_prepare_rechecks_image_and_deferred_state(
             "-ExecutionPolicy",
             "Bypass",
             "-File",
-            harness,
+            native_setup_harness,
         ],
         env={
             **os.environ,
@@ -798,6 +809,7 @@ def test_native_prepare_rechecks_image_and_deferred_state(
     )
     arguments = "/Auto Upgrade /Quiet /SkipFinalize /DynamicUpdate Disable /EULA Accept /ImageIndex 6"
     expected = ["mount", arguments, "dismount"] if index == 6 else ["mount", "dismount"]
+    assert calls.is_file(), result.stderr
     assert calls.read_text().splitlines() == expected, result.stderr
     if index == 6 and stage_ready and not boot_changed:
         assert result.returncode == 0, result.stderr
@@ -829,6 +841,7 @@ def test_native_prepare_rechecks_image_and_deferred_state(
 )
 def test_native_check_validates_media_and_only_invokes_scan(
     tmp_path: Path,
+    native_setup_harness: Path,
     arch: str,
     valid_hash: bool,
     setup_busy: bool,
@@ -843,8 +856,6 @@ def test_native_check_validates_media_and_only_invokes_scan(
     iso = tmp_path / "fixture.iso"
     iso.write_bytes(b"fixture")
     calls = tmp_path / "calls.txt"
-    harness = tmp_path / "harness.ps1"
-    harness.write_text(HARNESS, encoding="utf-8")
     result = subprocess.run(
         [
             POWERSHELL,
@@ -853,7 +864,7 @@ def test_native_check_validates_media_and_only_invokes_scan(
             "-ExecutionPolicy",
             "Bypass",
             "-File",
-            harness,
+            native_setup_harness,
         ],
         env={
             **os.environ,
