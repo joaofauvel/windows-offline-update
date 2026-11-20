@@ -30,6 +30,13 @@ matches media to a full feature offer, check the offer's target release and
 base build. Allow a different cumulative revision for that target when native
 Setup accepts the migration. Explicit ISO input currently runs a compatibility
 preview only.
+
+The physical USB4 installation ran Setup's scan-only check with no WUA
+feature offer. Windows 11 Home x64 en-US 25H2 build 26200.9974 selected
+image 1 in the verified 26H2 ISO, build 26300.9457. Panther recorded
+`0xC1900210` and scan-only cleanup. This proves the real media compatibility
+check on the target installation. The WinRE handoff and committed upgrade
+remain separate tests.
 Finish pending jobs and required restarts before planning a full upgrade.
 Process other supported updates for the running build before offering an
 eligible full upgrade. Unavailable feature media or a failed feature-only
@@ -178,6 +185,16 @@ values, and a cold restart reached the source desktop. This approach
 relies on each boot-critical hook surviving the rest of Setup. The
 same-build evidence covers five registry values. Cross-version and
 other hook behavior still need testing.
+
+An installed WinRE rehearsal used a disposable split-EFI 26H2 Pro guest
+with Windows Setup deferred. Selecting **Troubleshoot → wuo** authorized
+the job and requested a reboot. A SYSTEM startup task in the original
+Windows installation consumed the authorization and ran native Setup
+`/Finalize`. Setup reported a successful pre-commit hook. SafeOS then
+finished, with all five USB4 values verified in the replacement registry
+before the first replacement kernel boot. The original registry kept its
+previous values. The rehearsal used a lab-only launcher and task. The
+released job lifecycle and post-commit rollback still need validation.
 
 Before publishing an install-capable RC, run the workflow through the actual
 WinRE menu without a hypervisor timing dependency. Test a real keep-apps version
