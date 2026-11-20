@@ -29,9 +29,18 @@
 - [ ] Verify an actual cross-build update and deliberate hook failure without attaching a target ISO. Run the full Windows suite, Ruff, mypy and build, and review the finished diff.
 
 The retained 25H2 Pro lab found `Windows 11, version 26H2`, update ID
-`aa272a56-7dbf-4349-b410-10ae6defc750` revision `1`. It also reported KB5132061,
-so a KB in WUA metadata alone is insufficient to reject a Setup candidate.
-After explicit license acceptance, the targeted WUA download completed and
-accounted for about 8.42 GiB. The cache contained UUP install plans and
-servicing packages. The export and native commit timing still require lab
-validation before selecting an installation route.
+`aa272a56-7dbf-4349-b410-10ae6defc750` revision `1`. The `Upgrades` metadata
+reported KB5132061. The exact offer's completed download held about 8.42 GiB
+and its cache plan selected KB5121794, a CBS enablement package. The selected
+CAB matched the plan's SHA-256 and contained three valid Microsoft catalogs.
+The plan's Media and SetupDU sections were empty. This applies to the same
+core OS family and provides no full Setup offer for the commit gate test.
+The documented prerequisite is KB5124010 or later. A genuine replacement
+offer from an earlier Windows release is still needed for the full-upgrade
+path. [Microsoft KB5121794](https://support.microsoft.com/en-gb/servicing/os/windows-11/2026/09/kb5121794-feature-update-to-windows-11-version-26h2)
+
+The exact CAB applied through the installed WinRE to a separate, prerequisite-
+ready split-EFI guest. The guest cold-booted from 26200.9974 to 26300.9974. The
+five USB4 registry values were 0 after boot, and the EFI fallback matched the
+baseline hash. This used the validated CAB directly in the lab. Automatic
+selection and export of an enablement package from WUA still need integration.

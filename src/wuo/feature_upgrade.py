@@ -82,7 +82,7 @@ def offered_release(offer: Offer, identity: TargetIdentity) -> str | None:
         or offer.category != "features"
         or offer.revision is None
         or offer.revision < 1
-        or (offer.kb_articles and not offer.upgrade_classified)
+        or offer.kb_articles
         or not re.search(r"\bWindows 11\b", offer.title, re.I)
         or re.search(r"\b(KB[0-9]+|enablement)\b", offer.title, re.I)
     ):

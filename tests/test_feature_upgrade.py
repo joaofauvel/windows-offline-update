@@ -352,7 +352,7 @@ def test_plain_feature_title_can_refer_to_an_enablement_kb() -> None:
     assert feature.offered_release(offers[0], TARGET) is None
 
 
-def test_wua_classified_full_feature_offer_can_reference_a_kb() -> None:
+def test_wua_enablement_offer_can_use_the_plain_upgrades_title() -> None:
     raw = json.dumps(
         {
             "status": 2,
@@ -370,7 +370,8 @@ def test_wua_classified_full_feature_offer_can_reference_a_kb() -> None:
     )
     offers, issue = update.parse_offers(raw)
     assert issue is None
-    assert feature.offered_release(offers[0], TARGET) == "26H2"
+    # This offer's actual WUA plan contains an enablement CAB and no Setup media.
+    assert feature.offered_release(offers[0], TARGET) is None
     assert (
         feature.offered_release(
             replace(offers[0], title="Windows 11, version 26H2 enablement package"),
