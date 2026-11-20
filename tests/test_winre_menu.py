@@ -1,5 +1,9 @@
 import json
+import os
+import subprocess
 from pathlib import Path
+from uuid import uuid4
+from xml.etree import ElementTree
 
 import pytest
 
@@ -26,6 +30,81 @@ def test_main_help_shows_the_routine_commands(
         assert command in help_text
     assert "prepare-drivers" not in help_text
     assert cli.main(["prepare-drivers", "--help"]) == 0
+
+
+def test_feature_task_keeps_the_full_id_and_escapes_the_script_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from wuo import winre_menu
+
+    windows = tmp_path / "Windows"
+    menu = winre_menu.Menu(
+        TargetIdentity("25H2", 26200, 9974, "x64", windows, OWNER, LOADER)
+    )
+    script = tmp_path / "upgrade & recovery" / "feature_upgrade.ps1"
+    script.parent.mkdir()
+    task_files: list[Path] = []
+
+    def register(command: list[str | Path]) -> str:
+        assert command[:-1] == [
+            windows / "System32/schtasks.exe",
+            "/Create",
+            "/TN",
+            f"wuo-feature-{JOB}",
+            "/XML",
+        ]
+        task_file = Path(command[-1])
+        assert task_file.is_relative_to(script.parent)
+        task_files.append(task_file)
+        definition = ElementTree.parse(task_file).getroot()
+        assert definition.find("{*}Triggers/{*}BootTrigger") is not None
+        assert definition.findtext("{*}Principals/{*}Principal/{*}UserId") == "S-1-5-18"
+        assert definition.findtext("{*}Actions/{*}Exec/{*}Command") == str(
+            windows / "System32/WindowsPowerShell/v1.0/powershell.exe"
+        )
+        assert definition.findtext("{*}Actions/{*}Exec/{*}Arguments") == (
+            f'-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{script}" -FinalizeJob {JOB}'
+        )
+        return ""
+
+    monkeypatch.setattr(winre_menu, "_run", register)
+    menu._register_feature_task(JOB, script)
+    assert len(task_files) == 1
+    assert not task_files[0].exists()
+
+
+@pytest.mark.skipif(
+    os.name != "nt" or os.environ.get("RUNNER_ENVIRONMENT") != "github-hosted",
+    reason="requires the disposable Windows CI runner's elevated Task Scheduler",
+)
+def test_windows_scheduler_stores_the_full_feature_task_command(tmp_path: Path) -> None:
+    from wuo.winre_menu import Menu
+
+    windows = Path(os.environ["SYSTEMROOT"])
+    menu = Menu(TargetIdentity("25H2", 26200, 9974, "x64", windows, OWNER, LOADER))
+    script = tmp_path / "upgrade & recovery" / "feature_upgrade.ps1"
+    script.parent.mkdir()
+    script.write_text("exit 0\n", encoding="ascii")
+    job = str(uuid4())
+    task = f"wuo-feature-{job}"
+    scheduler = windows / "System32/schtasks.exe"
+    menu._register_feature_task(job, script)
+    try:
+        exported = subprocess.check_output(
+            [scheduler, "/Query", "/TN", task, "/XML"], text=True
+        )
+        definition = ElementTree.fromstring(exported)
+        assert definition.find("{*}Triggers/{*}BootTrigger") is not None
+        assert definition.findtext("{*}Principals/{*}Principal/{*}UserId") == "S-1-5-18"
+        assert Path(definition.findtext("{*}Actions/{*}Exec/{*}Command", "")) == (
+            windows / "System32/WindowsPowerShell/v1.0/powershell.exe"
+        )
+        arguments = definition.findtext("{*}Actions/{*}Exec/{*}Arguments")
+        assert arguments == (
+            f'-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{script}" -FinalizeJob {job}'
+        )
+    finally:
+        subprocess.run([scheduler, "/Delete", "/TN", task, "/F"], check=True)
 
 
 @pytest.mark.parametrize("backup_fails", [False, True])

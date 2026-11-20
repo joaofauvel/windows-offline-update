@@ -12,6 +12,7 @@ from importlib.resources import as_file, files
 from pathlib import Path
 from stat import FILE_ATTRIBUTE_REPARSE_POINT
 from uuid import UUID, uuid4
+from xml.sax.saxutils import escape
 
 from . import bundle
 from .downloads import package_hashes
@@ -321,9 +322,8 @@ class Menu:
     def _register_feature_task(self, job: str, continuation: Path) -> None:
         system32 = self.target.windows / "System32"
         powershell = system32 / "WindowsPowerShell/v1.0/powershell.exe"
-        action = subprocess.list2cmdline(
+        arguments = subprocess.list2cmdline(
             [
-                str(powershell),
                 "-NoProfile",
                 "-NonInteractive",
                 "-ExecutionPolicy",
@@ -334,20 +334,35 @@ class Menu:
                 job,
             ]
         )
-        _run(
-            [
-                system32 / "schtasks.exe",
-                "/Create",
-                "/TN",
-                f"wuo-feature-{job}",
-                "/TR",
-                action,
-                "/SC",
-                "ONSTART",
-                "/RU",
-                "SYSTEM",
-            ]
-        )
+        # /TR can truncate the combined command line, including the job ID.
+        definition = f"""\
+<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <Triggers><BootTrigger /></Triggers>
+  <Principals><Principal id="System"><UserId>S-1-5-18</UserId></Principal></Principals>
+  <Actions Context="System">
+    <Exec>
+      <Command>{escape(str(powershell))}</Command>
+      <Arguments>{escape(arguments)}</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+"""
+        with tempfile.TemporaryDirectory(
+            prefix="task-", dir=continuation.parent
+        ) as directory:
+            task_file = Path(directory) / "task.xml"
+            task_file.write_text(definition, encoding="utf-16")
+            _run(
+                [
+                    system32 / "schtasks.exe",
+                    "/Create",
+                    "/TN",
+                    f"wuo-feature-{job}",
+                    "/XML",
+                    task_file,
+                ]
+            )
 
     def publish(self, source: Path) -> Path:
         with self._lock():
