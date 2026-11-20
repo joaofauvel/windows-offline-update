@@ -24,6 +24,7 @@ lazy from .update import Offer
 
 MENU_PATH = bundle.JOBS_PATH.parent / "menu"
 _FEATURE_MENU = "feature-menu.version"
+_FEATURE_MENU_VERSION = b"2\r\n"
 
 
 def _id(value: str) -> str:
@@ -165,7 +166,10 @@ class Menu:
             if self._pending_id() is not None:
                 raise ValueError("An update is already staged. Run wuo status.")
             capability = self.root / _FEATURE_MENU
-            if not capability.is_file() or capability.read_bytes() != b"1\r\n":
+            if (
+                not capability.is_file()
+                or capability.read_bytes() != _FEATURE_MENU_VERSION
+            ):
                 raise ValueError(
                     "Refresh the recovery menu with wuo remove and wuo setup before preparing a feature upgrade."
                 )
@@ -205,6 +209,7 @@ class Menu:
                 ):
                     raise ValueError("The hook selection changed during preparation.")
             (job / "feature.json").write_bytes(request)
+            marker = f"{job_id}\r\n".encode("ascii")
             if any(hook.phase == "pre" for hook in selected.hooks):
                 pre_hooks = job / "source-hooks.cmd"
                 pre_hooks.write_bytes(
@@ -228,6 +233,7 @@ class Menu:
                     f"{package_hashes(runner)[0]}\r\n".encode("ascii")
                 )
                 self._export_feature_restore(snapshot, job)
+                (job / "rollback.required").write_bytes(marker)
             callback_dir.mkdir(parents=True)
             (callback_dir / "precommit.cmd").write_bytes(callback)
             prepare_media(self.target, media, image)
@@ -236,7 +242,6 @@ class Menu:
                 files("wuo").joinpath("feature_upgrade.ps1").read_bytes()
             )
             self._register_feature_task(str(job_id), continuation)
-            marker = f"{job_id}\r\n".encode("ascii")
             (job / "target.id").write_bytes(marker)
             (job / "feature.ready").write_bytes(marker)
             pending = job / "pending.id"
@@ -469,9 +474,16 @@ class Menu:
                         f"Windows Setup started the feature upgrade. Review {state / 'precommit.log'}."
                     )
                 elif (state / "authorized.id").is_file():
-                    print(
-                        "WinRE authorized the feature upgrade. Windows will resume the staged job."
-                    )
+                    backup_check = state / "backup-check.log"
+                    if backup_check.is_file():
+                        print(
+                            "Windows paused Setup because it could not verify the rollback backup. "
+                            f"Reconnect the backup drive and restart Windows. See {backup_check}."
+                        )
+                    else:
+                        print(
+                            "WinRE authorized the feature upgrade. Windows will resume the staged job."
+                        )
                 else:
                     print("Feature upgrade staged. Run wuo update to enter recovery.")
                 return
@@ -722,7 +734,7 @@ class Menu:
             output = _run(command)
         capability = self.root / _FEATURE_MENU
         if action == "install":
-            capability.write_bytes(b"1\r\n")
+            capability.write_bytes(_FEATURE_MENU_VERSION)
         else:
             capability.unlink(missing_ok=True)
         if output.strip():

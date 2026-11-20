@@ -68,6 +68,7 @@ def feature_setup_assets(
         "sha256": media.sha256.lower(),
         "image": asdict(image),
         "callback_sha256": sha256(callback).hexdigest(),
+        "rollback": media.rollback,
     }
     return json.dumps(request, sort_keys=True).encode("ascii"), callback
 

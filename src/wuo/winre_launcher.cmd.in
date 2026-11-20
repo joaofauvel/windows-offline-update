@@ -58,6 +58,13 @@ if exist "%JOB%\authorized.id" goto started_feature
 if exist "%JOB%\claimed.id" goto feature_rollback
 call :plain "%JOB%\feature.json" || goto bad_job
 call :plain "%TARGET%\$WINDOWS.~BT\NewOS\Windows\System32\Config\SYSTEM" || goto bad_job
+if exist "%JOB%\rollback.json" if not exist "%JOB%\rollback.required" goto failed_backup_check
+if exist "%JOB%\rollback.required" (
+    call :match_marker "%JOB%\rollback.required" %JOB_ID% || goto failed_backup_check
+    call :plain "%JOB%\rollback.json" || goto failed_backup_check
+    call :verify_feature_script restore || goto failed_backup_check
+    call "%JOB%\restore.cmd" check_backup "%~dp0" || goto failed_backup_check
+)
 if exist "%JOB%\source-hooks.cmd" (
     call :verify_feature_script source-hooks || goto bad_job
     call "%JOB%\source-hooks.cmd" %TARGET% || goto failed_feature_hooks
@@ -264,6 +271,9 @@ echo The recovery check failed. Review the output before retrying this update.
 goto cleanup
 :failed_restore
 echo Feature rollback failed. Review the restore log on the rollback drive before restarting.
+goto cleanup
+:failed_backup_check
+echo The rollback backup could not be verified. Reconnect the backup drive and try again. Windows Setup has not been authorized.
 goto cleanup
 :failed_feature_hooks
 echo A source hook failed. Review "%JOB%\pre-feature.log". Setup was not authorized.

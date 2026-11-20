@@ -64,6 +64,49 @@ def test_feature_job_authorizes_once_and_restarts(launcher: LauncherLab) -> None
     assert launcher.trace.count("Reboot") == 1
 
 
+@pytest.mark.parametrize("backup", ["available", "offline", "missing-recipe"])
+def test_feature_requires_rollback_backup_before_authorization(
+    launcher: LauncherLab, backup: str
+) -> None:
+    marker = f"{JOB}\r\n".encode("ascii")
+    (launcher.job / "feature.ready").write_bytes(marker)
+    (launcher.job / "rollback.required").write_bytes(marker)
+    (launcher.job / "rollback.json").write_bytes(b"{}")
+    (launcher.job / "feature.json").write_text("{}", encoding="ascii")
+    staged = launcher.root / "NewOS/Windows/System32/Config/SYSTEM"
+    staged.parent.mkdir(parents=True)
+    staged.touch()
+    for name in ("restore", "source-hooks"):
+        if name == "restore" and backup == "missing-recipe":
+            continue
+        script = launcher.job / f"{name}.cmd"
+        tail = (
+            "exit /b %WUO_TEST_BACKUP_FAILURE%\n"
+            if name == "restore"
+            else "exit /b 0\n"
+        )
+        script.write_text(
+            f'@echo off\n>>"%WUO_TEST_ROOT%\\trace.txt" echo {name} %~1\n{tail}',
+            encoding="ascii",
+        )
+        digest = hashlib.sha256(script.read_bytes()).hexdigest()
+        (launcher.job / f"{name}.sha256").write_bytes(f"{digest}\r\n".encode("ascii"))
+
+    result = launcher.run(WUO_TEST_BACKUP_FAILURE="1" if backup == "offline" else "0")
+    ready = backup == "available"
+    assert (result.returncode == 0) is ready
+    assert (launcher.job / "authorized.id").is_file() is ready
+    assert ("Reboot" in launcher.trace) is ready
+    assert any(line.startswith("source-hooks ") for line in launcher.trace) is ready
+    assert ("restore check_backup" in launcher.trace) is (backup != "missing-recipe")
+    if ready:
+        assert launcher.trace.index("restore check_backup") < launcher.trace.index(
+            "source-hooks Z:"
+        )
+    else:
+        assert "rollback backup" in result.stdout.lower()
+
+
 @pytest.mark.parametrize("approved", [False, True])
 def test_feature_rollback_checks_the_recipe_before_asking_for_approval(
     launcher: LauncherLab, approved: bool

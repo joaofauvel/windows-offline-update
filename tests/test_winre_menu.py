@@ -42,7 +42,7 @@ def test_feature_is_published_only_after_backup_and_deferred_setup(
     menu.root.mkdir(parents=True)
     menu.job_state(JOB).parent.mkdir()
     (menu.root / "installed.id").write_text(f"{OWNER}\n", encoding="ascii")
-    (menu.root / "feature-menu.version").write_bytes(b"1\r\n")
+    (menu.root / "feature-menu.version").write_bytes(b"2\r\n")
     iso = tmp_path / "Windows.iso"
     iso.touch()
     media = feature_upgrade.FeatureMedia(iso, "ab" * 32, rollback=True)
@@ -113,6 +113,7 @@ def test_feature_is_published_only_after_backup_and_deferred_setup(
         assert events == ["backup", "prepare", "schedule"]
         marker = f"{job.name}\r\n".encode("ascii")
         assert (job / "feature.ready").read_bytes() == marker
+        assert (job / "rollback.required").read_bytes() == marker
         assert (menu.root / "pending.id").read_bytes() == marker
         assert (job / "restore.sha256").read_text().strip() == package_hashes(
             job / "restore.cmd"

@@ -1,7 +1,7 @@
 @echo off
 setlocal EnableExtensions DisableDelayedExpansion
 if /i not "%SystemRoot%"=="X:\Windows" exit /b 1
-if /i not "%~1"=="check" if /i not "%~1"=="apply" exit /b 2
+if /i not "%~1"=="check" if /i not "%~1"=="apply" if /i not "%~1"=="check_backup" exit /b 2
 set "SYS=%SystemRoot%\System32"
 set "WORK=X:\Windows\Temp\wuo-rollback-%RANDOM%-%RANDOM%"
 mkdir "%WORK%" || exit /b 1
@@ -31,6 +31,13 @@ for /f "delims=" %%F in ('dir /b /s /a:l "%SNAPSHOT%\EFI\Microsoft\Boot" 2^>nul'
 set "BOOT_COUNT=0"
 for /f "delims=" %%F in ('dir /b /s /a:-d "%SNAPSHOT%\EFI\Microsoft\Boot" 2^>nul') do call :count_backup_file "%%~nxF"
 if not "%BOOT_COUNT%"=="@@BOOT_FILE_COUNT@@" goto invalid_backup
+if /i "%~1"=="check_backup" (
+    if not exist "%SYS%\robocopy.exe" goto invalid_catalog
+    if not exist "%SNAPSHOT%\recovery\restore.cmd" goto invalid_catalog
+    "%SYS%\wbadmin.exe" get items "-version:@@VERSION@@" "-backupTarget:%BACKUP%" "-machine:@@COMPUTER@@" >"%WORK%\catalog.txt" 2>&1 || goto invalid_catalog
+    echo Verified the rollback backup and recovery tools.
+    goto success
+)
 set "VERIFY_ROOT=%WINDOWS%\Windows.old\Windows"
 call :load_identity @@SOURCE_BUILD@@ @@SOURCE_UBR@@ || goto wrong_windows
 set "VERIFY_ROOT=%WINDOWS%\Windows"
@@ -129,6 +136,9 @@ echo Could not verify the Windows, EFI and backup volumes.
 goto unsuccessful
 :invalid_backup
 echo The EFI backup inventory could not be verified. Expected @@BOOT_FILE_COUNT@@ Windows boot files, counted %BOOT_COUNT%.
+goto unsuccessful
+:invalid_catalog
+echo Could not verify the Windows backup catalog or the recovery tools.
 goto unsuccessful
 :wrong_windows
 echo The Windows installation is outside the expected feature upgrade recovery phase.

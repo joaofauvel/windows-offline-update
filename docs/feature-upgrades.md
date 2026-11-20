@@ -48,8 +48,12 @@ upgrades require a backup drive.
 Before staging, wuo backs up Windows and the Windows EFI files. It puts a
 copy of the rollback launcher in
 `F:\WUO-Rollback\<job>\recovery\restore.cmd`. WinRE identifies the volumes
-by ID. Under **Troubleshoot → wuo**, a compatible pending rollback is offered
-for confirmation. From independent WinRE, use the backup drive's recovery
+by ID and verifies the backup before authorizing Setup. When Windows resumes,
+wuo rechecks the backup catalog before committing the upgrade. Keep the drive
+connected through both steps.
+
+Under **Troubleshoot → wuo**, a compatible pending rollback is offered for
+confirmation. From independent WinRE, use the backup drive's recovery
 letter and run `restore.cmd check` to check eligibility before `restore.cmd apply`.
 
 Rollback restores Windows Boot Manager's files and BCD on EFI. Use the

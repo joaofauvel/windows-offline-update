@@ -55,6 +55,33 @@ function Assert-ProtectedJobDirectory([string]$Path) {
     }
 }
 
+function Assert-FeatureBackupAvailable([string]$Job, [string]$JobId, $Request) {
+    $receiptPath = Join-Path $Job 'rollback.json'
+    Assert-PlainPath $receiptPath
+    $receipt = Get-Content -LiteralPath $receiptPath -Raw | ConvertFrom-Json
+    if ($receipt.schema -ne 1 -or $receipt.id -cne $JobId -or
+        $receipt.machine -ne $Request.machine -or $receipt.source -ne $Request.source -or
+        $receipt.computer -ne $env:COMPUTERNAME -or
+        $receipt.catalog -notmatch '^[0-9]{2}/[0-9]{2}/[0-9]{4}-[0-9]{2}:[0-9]{2}$' -or
+        $receipt.volume -notmatch '^\\\\\?\\Volume\{[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\}\\$') {
+        throw 'The rollback backup receipt does not match the staged feature upgrade.'
+    }
+    $partitions = @(Get-Partition | Where-Object { $_.AccessPaths -contains $receipt.volume })
+    if ($partitions.Count -ne 1 -or $partitions[0].DriveLetter -notmatch '^[A-Z]$') {
+        throw 'The selected rollback backup drive is unavailable.'
+    }
+    $drive = "$($partitions[0].DriveLetter):"
+    $root = Join-Path "$drive\" 'WUO-Rollback'
+    $snapshot = Join-Path $root $JobId
+    $portable = Join-Path $snapshot 'recovery'
+    foreach ($path in $root, $snapshot, $portable) { Assert-PlainPath $path -Directory }
+    foreach ($name in 'restore.cmd', 'certutil.exe', 'findstr.exe') {
+        Assert-PlainPath (Join-Path $portable $name)
+    }
+    $null = & "$env:SystemRoot\System32\wbadmin.exe" get items "-version:$($receipt.catalog)" "-backupTarget:$drive" "-machine:$($receipt.computer)"
+    if ($LASTEXITCODE -ne 0) { throw 'Windows Backup could not read the selected rollback backup.' }
+}
+
 function Assert-SourceMachine {
     $guid = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Cryptography' -Name MachineGuid).MachineGuid
     if ($guid -ne $request.machine) { throw 'This feature upgrade belongs to a different Windows installation.' }
@@ -219,6 +246,17 @@ try {
         Assert-SourceMachine
         Assert-PlainPath $stagedSystem
         Assert-JobMarker $authorized $jobId
+        if ($request.rollback -eq $true) {
+            $backupLog = Join-Path $job 'backup-check.log'
+            try {
+                Assert-JobMarker (Join-Path $job 'rollback.required') $jobId
+                Assert-FeatureBackupAvailable $job $jobId $request
+                [IO.File]::Delete($backupLog)
+            } catch {
+                [IO.File]::WriteAllText($backupLog, $_.Exception.Message)
+                throw
+            }
+        }
         [IO.File]::Move($authorized, $claimed)
     }
     $process = Start-Process -FilePath $setup -WorkingDirectory $root -Wait -PassThru -ArgumentList $arguments

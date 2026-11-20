@@ -83,6 +83,101 @@ def test_feature_asset_request_pins_callback_and_verified_media() -> None:
     assert manifest["iso"] == str(media.iso)
     assert manifest["sha256"] == "ab" * 32
     assert manifest["callback_sha256"] == hashlib.sha256(callback).hexdigest()
+    assert manifest["rollback"] is False
+
+
+@pytest.mark.skipif(POWERSHELL is None, reason="Windows PowerShell is required")
+@pytest.mark.parametrize("backup", ["missing", "wrong-volume", "bad-catalog", "ready"])
+def test_native_resume_validates_the_selected_backup_catalog(
+    tmp_path: Path, backup: str
+) -> None:
+    assert POWERSHELL is not None
+    volume = r"\\?\Volume{11111111-2222-3333-4444-555555555555}" + "\\"
+    job = str(UUID(int=9))
+    machine = str(UUID(int=10))
+    (tmp_path / "rollback.json").write_text(
+        json.dumps(
+            {
+                "schema": 1,
+                "id": job,
+                "machine": machine,
+                "source": "26200.9457",
+                "computer": os.environ["COMPUTERNAME"],
+                "catalog": "11/20/2026-12:43",
+                "volume": volume,
+            }
+        ),
+        encoding="ascii",
+    )
+    portable = tmp_path / "WUO-Rollback" / job / "recovery"
+    portable.mkdir(parents=True)
+    for tool in ("restore.cmd", "certutil.exe", "findstr.exe"):
+        (portable / tool).touch()
+    harness = tmp_path / "backup.ps1"
+    harness.write_text(
+        r"""
+$ErrorActionPreference = 'Stop'
+$tokens = $null
+$errors = $null
+$ast = [System.Management.Automation.Language.Parser]::ParseFile($env:WUO_SCRIPT, [ref]$tokens, [ref]$errors)
+if ($errors.Count) { throw $errors[0] }
+foreach ($function in $ast.FindAll({
+    param($node)
+    $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -in 'Assert-PlainPath', 'Assert-FeatureBackupAvailable'
+}, $false)) {
+    . ([scriptblock]::Create($function.Extent.Text))
+}
+$letter = 90..68 | ForEach-Object { [string][char]$_ } |
+    Where-Object { !(Get-PSDrive -Name $_ -ErrorAction SilentlyContinue) } |
+    Select-Object -First 1
+New-PSDrive -Name $letter -PSProvider FileSystem -Root $env:WUO_FIXTURE | Out-Null
+function Get-Partition {
+    if ($env:WUO_BACKUP_CASE -eq 'missing') { return }
+    $volume = if ($env:WUO_BACKUP_CASE -eq 'wrong-volume') { 'another-volume' } else { $env:WUO_BACKUP_VOLUME }
+    [pscustomobject]@{AccessPaths=@($volume); DriveLetter=$letter}
+}
+function Mock-BackupCatalog {
+    if ($args.Count -ne 5 -or $args[0] -ne 'get' -or $args[1] -ne 'items' -or
+        $args[2] -ne '-version:11/20/2026-12:43' -or $args[3] -ne ('-backupTarget:{0}:' -f $letter) -or
+        $args[4] -ne "-machine:$env:COMPUTERNAME") { throw 'Wrong backup lookup.' }
+    'Catalog checked'
+    Set-Content -LiteralPath $env:WUO_CALLS -Value 'catalog'
+    $global:LASTEXITCODE = [int]($env:WUO_BACKUP_CASE -eq 'bad-catalog')
+}
+Set-Alias "$env:SystemRoot\System32\wbadmin.exe" Mock-BackupCatalog
+Assert-FeatureBackupAvailable $env:WUO_FIXTURE $env:WUO_JOB @{machine=$env:WUO_MACHINE; source='26200.9457'}
+""",
+        encoding="ascii",
+    )
+    calls = tmp_path / "calls.txt"
+    result = subprocess.run(
+        [
+            POWERSHELL,
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            harness,
+        ],
+        env={
+            **os.environ,
+            "WUO_SCRIPT": str(SCRIPT),
+            "WUO_FIXTURE": str(tmp_path),
+            "WUO_BACKUP_CASE": backup,
+            "WUO_BACKUP_VOLUME": volume,
+            "WUO_JOB": job,
+            "WUO_MACHINE": machine,
+            "WUO_CALLS": str(calls),
+        },
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert (result.returncode == 0) is (backup == "ready"), result.stderr
+    assert calls.exists() is (backup in {"bad-catalog", "ready"}), result.stderr
 
 
 def test_only_one_new_full_feature_offer_is_eligible() -> None:
