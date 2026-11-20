@@ -194,7 +194,18 @@ Windows installation consumed the authorization and ran native Setup
 finished, with all five USB4 values verified in the replacement registry
 before the first replacement kernel boot. The original registry kept its
 previous values. The rehearsal used a lab-only launcher and task. The
-released job lifecycle and post-commit rollback still need validation.
+released job lifecycle and automatic rollback still need validation.
+
+A separate rollback rehearsal restored a fork of that committed same-build
+guest. Windows Backup created a VSS image of the original Windows volume.
+The independent recovery image verified the replacement OS was pending its
+first boot and restored the original volume with the split EFI disk still
+attached. A lab helper restored only the saved Microsoft boot directory and
+verified the other EFI files were unchanged. The guest cold-booted with the
+post-Setup firmware state and verified the original machine identity,
+registry values, and marker. This demonstrates recovery after commit using
+independent media and a manual EFI restore. The automatic path from the
+installed WinRE menu and cross-version rollback remain unverified.
 
 Before publishing an install-capable RC, run the workflow through the actual
 WinRE menu without a hypervisor timing dependency. Test a real keep-apps version
