@@ -1,6 +1,6 @@
 # Hooks before the first boot of a feature upgrade
 
-The 0.4.0 release candidate can prepare a full Windows Setup upgrade from an
+The release candidate can prepare a full Windows Setup upgrade from an
 ISO and continue it from **Troubleshoot → wuo** in the installed Windows
 Recovery Environment (WinRE). The full upgrade and recovery paths have been
 rehearsed in a split-EFI VM. Physical Limine setups still require validation.
@@ -64,6 +64,10 @@ Add `--preserve-boot-order` to a full feature upgrade to save the current
 firmware boot order and eligible EFI fallback loader. The flag is available
 with or without `--backup-drive`. Use `--dry-run` to see the EFI partition,
 boot order, and fallback file before staging.
+
+The saved snapshot belongs to the job that captured it. If an older job is
+already staged, `wuo status` shows that job and its hooks. Keep the staged
+files and backup until you have a tested way to replace the deferred job.
 
 After Setup completes, wuo restores the saved order by matching the original
 entries to their current loader identities. It keeps newly added entries.

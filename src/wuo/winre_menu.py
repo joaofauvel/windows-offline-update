@@ -574,7 +574,9 @@ class Menu:
             (self.root / "pending.id").unlink(missing_ok=True)
         print("Pending job cleared. Its files and logs are retained.")
 
-    def resume(self, *, allow_restart: bool = True) -> bool:
+    def resume(
+        self, *, allow_restart: bool = True, require_boot_preservation: bool = False
+    ) -> bool:
         with self._lock():
             self.describe_pending_hooks()
             windows_result = windows_updates.verify(self.target, self.root)
@@ -601,6 +603,13 @@ class Menu:
                 (self.root / "pending.id").unlink()
                 return True
             state = self.job_state(job_id)
+            if require_boot_preservation and (state / "feature.ready").is_file():
+                request = json.loads((state / "feature.json").read_bytes())
+                if not request.get("boot_preservation"):
+                    raise ValueError(
+                        "This feature upgrade was staged without boot preservation. "
+                        "Keep the staged job and its backup. Run wuo status to review it."
+                    )
             if (state / "feature.ready").is_file() and any(
                 (state / name).is_file() for name in ("authorized.id", "claimed.id")
             ):

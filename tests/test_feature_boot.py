@@ -206,7 +206,7 @@ def test_preview_is_read_only_and_restore_retains_new_entries(tmp_path: Path) ->
         {"order": [2, 3, 4], "entries": {"2": "Windows", "3": "Limine", "4": "Limine"}},
         {
             "order": [1, 2, 3],
-            "entries": {"1": "Changed", "2": "Windows", "3": "Limine"},
+            "entries": {"1": "Changed", "2": "Windows", "3": "New"},
         },
     ],
 )
@@ -227,6 +227,20 @@ def test_matches_renumbered_entry_to_the_same_loader(tmp_path: Path) -> None:
         },
     )
     assert result["firmware_writes"] == ["6,2,8"]
+    assert result["result"]["order"] == "restored"
+
+
+def test_retains_reused_number_when_the_original_loader_has_moved(
+    tmp_path: Path,
+) -> None:
+    result = exercise(
+        tmp_path,
+        current={
+            "order": [1, 2, 8, 6],
+            "entries": {"1": "Reused", "2": "Windows", "6": "Limine", "8": "New"},
+        },
+    )
+    assert result["firmware_writes"] == ["6,2,1,8"]
     assert result["result"]["order"] == "restored"
 
 

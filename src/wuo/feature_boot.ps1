@@ -318,10 +318,7 @@ function Get-WuoOrderPlan($Saved, $Current) {
     $seen = [Collections.Generic.HashSet[string]]::new()
     foreach ($entry in $Saved) {
         $match = $byId[$entry.id]
-        if ($null -ne $match -and $match.identity -cne $entry.identity) {
-            throw "UEFI entry $($entry.id) points to a different loader."
-        }
-        if ($null -eq $match) {
+        if ($null -eq $match -or $match.identity -cne $entry.identity) {
             $matches = @($Current | Where-Object { $_.identity -ceq $entry.identity })
             if ($matches.Count -ne 1) { throw "UEFI entry $($entry.id) is missing or ambiguous." }
             $match = $matches[0]

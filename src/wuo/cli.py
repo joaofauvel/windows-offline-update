@@ -58,7 +58,11 @@ async def _update(client: httpx.AsyncClient, args: argparse.Namespace) -> int:
     output = args.output or Path.home() / _DOWNLOADS
     if configured and not args.dry_run:
         allow_restart = not (args.hook or args.profile or args.no_hooks)
-        if not await asyncio.to_thread(menu.resume, allow_restart=allow_restart):
+        if not await asyncio.to_thread(
+            menu.resume,
+            allow_restart=allow_restart,
+            require_boot_preservation=getattr(args, "preserve_boot_order", False),
+        ):
             return 1 if menu.windows_incomplete else 0
     with tempfile.TemporaryDirectory(prefix="wuo-hooks-") as temporary:
         if args.hook or args.profile or args.no_hooks or not menu.installed:

@@ -151,6 +151,29 @@ def test_feature_is_published_only_after_backup_and_deferred_setup(
         )[0]
 
 
+def test_resume_requires_boot_preservation_in_the_captured_feature_job(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from wuo.winre_menu import Menu
+
+    identity = TargetIdentity(
+        "25H2", 26200, 9974, "x64", tmp_path / "Windows", OWNER, LOADER
+    )
+    menu = Menu(identity)
+    state = menu.job_state(JOB)
+    state.mkdir(parents=True)
+    menu.root.mkdir(parents=True)
+    (menu.root / "installed.id").write_text(f"{OWNER}\n", encoding="ascii")
+    for marker in (menu.root / "pending.id", state / "feature.ready"):
+        marker.write_text(f"{JOB}\n", encoding="ascii")
+    request = {"id": JOB, "machine": OWNER, "source": "26200.9974"}
+    (state / "feature.json").write_text(json.dumps(request), encoding="ascii")
+    monkeypatch.setattr(menu, "offer_restart", lambda: pytest.fail("Offered old job"))
+
+    with pytest.raises(ValueError, match="staged without boot preservation"):
+        menu.resume(require_boot_preservation=True)
+
+
 def test_feature_verification_waits_for_boot_preservation_receipt(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
