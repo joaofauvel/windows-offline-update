@@ -66,11 +66,15 @@ def test_plain_feature_title_can_refer_to_an_enablement_kb() -> None:
 def test_iso_preview_preserves_a_feature_offer_with_a_standalone_package(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    identity = replace(TARGET, windows=tmp_path / "Windows")
+    previews = []
     monkeypatch.setattr(update, "scan_offers", lambda _: ([OFFER], None))
 
-    async def package(_: AsyncClient, offer: Offer, identity: TargetIdentity) -> Update:
+    async def package(
+        _: AsyncClient, offer: Offer, installed: TargetIdentity
+    ) -> Update:
         assert offer == OFFER
-        assert identity == TARGET
+        assert installed == identity
         return Update(
             offer.id,
             offer.title,
@@ -84,17 +88,25 @@ def test_iso_preview_preserves_a_feature_offer_with_a_standalone_package(
             ),
         )
 
-    async def refuse(*_: object) -> None:
-        pytest.fail("A compatible standalone package was routed to Setup")
+    async def check(
+        _: AsyncClient,
+        installed: TargetIdentity,
+        offers: list[Offer],
+        media: feature.FeatureMedia,
+    ) -> None:
+        assert installed == identity
+        # A separate ISO preview is allowed, but the CBS offer is not a Setup candidate.
+        assert not offers
+        previews.append(media.iso)
 
     monkeypatch.setattr(update, "_package", package)
-    monkeypatch.setattr(feature, "check_feature", refuse)
+    monkeypatch.setattr(feature, "check_feature", check)
 
     async def run() -> int:
         async with AsyncClient() as client:
             return await update.run_update(
                 client,
-                TARGET,
+                identity,
                 tmp_path,
                 dry_run=True,
                 feature_media=feature.FeatureMedia(Path("windows.iso"), "a" * 64),
@@ -102,6 +114,7 @@ def test_iso_preview_preserves_a_feature_offer_with_a_standalone_package(
 
     assert asyncio.run(run()) == 0
     assert "Would download enablement.cab" in capsys.readouterr().out
+    assert previews == [Path("windows.iso")]
 
 
 def test_published_build_must_be_unique_and_match_explicit_offer_build() -> None:
@@ -154,6 +167,58 @@ def test_cli_plans_rollback_by_default(
     )
     assert cli.main(["update", "--no-rollback"]) == 2
     assert cli.main(["update", "--dry-run", "--feature-iso", "windows.iso"]) == 2
+
+
+@pytest.mark.parametrize("scan_error", [False, True])
+def test_explicit_iso_preview_without_a_wua_offer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, scan_error: bool
+) -> None:
+    identity = replace(
+        TARGET, windows=tmp_path / "Windows", machine_guid=str(UUID(int=5))
+    )
+    calls = []
+
+    def scan(installed: TargetIdentity) -> tuple[list[Offer], None]:
+        assert installed == identity
+        if scan_error:
+            raise OSError("WUA unavailable")
+        return [], None
+
+    def check_native(
+        installed: TargetIdentity, iso: Path, digest: str, build: int | None
+    ) -> None:
+        assert installed == identity
+        calls.append((iso, digest, build))
+
+    def refuse(*args: object, **kwargs: object) -> None:
+        pytest.fail("Feature preview attempted to stage or restart Windows")
+
+    monkeypatch.setattr("wuo.target.read_target", lambda *, read_loader: identity)
+    monkeypatch.setattr(feature, "read_target", lambda *, read_loader: identity)
+    monkeypatch.setattr("wuo.update.scan_offers", scan)
+    monkeypatch.setattr(feature, "_scan_media", check_native)
+    monkeypatch.setattr(Menu, "resume", refuse)
+    monkeypatch.setattr(Menu, "publish", refuse)
+    arguments = [
+        "update",
+        "--dry-run",
+        "--only",
+        "features",
+        "--feature-iso",
+        "windows.iso",
+        "--iso-sha256",
+        "a" * 64,
+        "--accept-setup-eula",
+    ]
+    assert cli.main(arguments) == 0
+    assert calls == [(Path("windows.iso"), "a" * 64, None)]
+
+    menu = Menu(identity)
+    menu.root.mkdir(parents=True)
+    (menu.root / "installed.id").write_text(identity.machine_guid, encoding="ascii")
+    (menu.root / "pending.id").write_text(str(UUID(int=6)), encoding="ascii")
+    assert cli.main(arguments) == 1
+    assert len(calls) == 1
 
 
 def test_preview_isolated_from_staging_and_restart(
@@ -298,7 +363,7 @@ function Get-WindowsImage {
     param($ImagePath, $Index)
     if ($Index -eq 0) { return @{ImageIndex=6} }
     return @{
-        ImageIndex=6; MajorVersion=10; MinorVersion=0; Build=26300; SPBuild=9457
+        ImageIndex=6; MajorVersion=10; MinorVersion=0; Build=[int]$env:WUO_TEST_IMAGE_BUILD; SPBuild=9457
         InstallationType='Client'; Architecture=9; EditionId='Professional'
         DefaultLanguageIndex=0; Languages=@('en-US')
     }
@@ -315,12 +380,23 @@ function Start-Process {
 
 @pytest.mark.skipif(POWERSHELL is None, reason="Windows PowerShell is required")
 @pytest.mark.parametrize(
-    ("arch", "valid_hash", "setup_busy", "expected_calls"),
+    (
+        "arch",
+        "valid_hash",
+        "setup_busy",
+        "expected_build",
+        "image_build",
+        "expected_calls",
+    ),
     [
-        ("x64", True, False, ["mount", "scan", "dismount"]),
-        ("arm64", True, False, ["mount", "dismount"]),
-        ("x64", False, False, []),
-        ("x64", True, True, []),
+        ("x64", True, False, "26300", 26300, ["mount", "scan", "dismount"]),
+        ("x64", True, False, "", 26300, ["mount", "scan", "dismount"]),
+        ("x64", True, False, "", 26200, ["mount", "dismount"]),
+        ("x64", True, False, "", 26100, ["mount", "dismount"]),
+        ("x64", True, False, "26300", 26400, ["mount", "dismount"]),
+        ("arm64", True, False, "26300", 26300, ["mount", "dismount"]),
+        ("x64", False, False, "26300", 26300, []),
+        ("x64", True, True, "26300", 26300, []),
     ],
 )
 def test_native_check_validates_media_and_only_invokes_scan(
@@ -328,6 +404,8 @@ def test_native_check_validates_media_and_only_invokes_scan(
     arch: str,
     valid_hash: bool,
     setup_busy: bool,
+    expected_build: str,
+    image_build: int,
     expected_calls: list[str],
 ) -> None:
     assert POWERSHELL is not None
@@ -359,9 +437,10 @@ def test_native_check_validates_media_and_only_invokes_scan(
             if valid_hash
             else "0" * 64,
             "WUO_FEATURE_SOURCE": "26200.9457",
-            "WUO_FEATURE_BUILD": "26300",
+            "WUO_FEATURE_BUILD": expected_build,
             "WUO_FEATURE_ARCH": arch,
             "WUO_TEST_SETUP_BUSY": str(int(setup_busy)),
+            "WUO_TEST_IMAGE_BUILD": str(image_build),
         },
         capture_output=True,
         text=True,
@@ -377,12 +456,12 @@ def test_native_check_validates_media_and_only_invokes_scan(
         assert result.returncode == 0, result.stderr
         report = json.loads(result.stdout)
         feature.require_scan_success(report["setup_code"])
-        assert report["build"] == 26300
+        assert report["build"] == image_build
     else:
         assert result.returncode != 0
         expected_error = (
             "pending Windows"
             if setup_busy
-            else ("one Windows build" if valid_hash else "differs from")
+            else ("one Windows" if valid_hash else "differs from")
         )
         assert expected_error in result.stderr

@@ -23,10 +23,13 @@ Setup's keep-apps-and-data compatibility result. Missing media and blocked
 migrations are reported as incomplete. A dry run previews the route without
 committing Setup. Windows Update offer discovery and policy handling follow
 the existing flow. A version-specific upgrade or USB4 profile is never required.
-The ISO supplies payload for an eligible full feature offer. It cannot start an
-upgrade by itself when the configured update service offers none. Match media
-to the offer's target release and base build, allowing a different cumulative
-revision for that target when native Setup accepts the migration.
+An explicitly supplied ISO is also a source for a full feature upgrade when
+Windows Update offers none. Identify exactly one newer image matching the
+installed edition, architecture and default UI language. When the preview
+matches media to a full feature offer, check the offer's target release and
+base build. Allow a different cumulative revision for that target when native
+Setup accepts the migration. Explicit ISO input currently runs a compatibility
+preview only.
 Finish pending jobs and required restarts before planning a full upgrade.
 Process other supported updates for the running build before offering an
 eligible full upgrade. Unavailable feature media or a failed feature-only

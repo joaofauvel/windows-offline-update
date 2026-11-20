@@ -1,4 +1,4 @@
-"""Preflight a Windows Setup feature offer without staging an installation."""
+"""Check whether Windows Setup can upgrade from a selected ISO."""
 
 import asyncio
 import json
@@ -105,7 +105,9 @@ def require_scan_success(code: int) -> None:
     raise ValueError(f"{message} (0x{code:08X}). Check the Windows Setup Panther logs.")
 
 
-def _scan_media(identity: TargetIdentity, iso: Path, digest: str, build: int) -> None:
+def _scan_media(
+    identity: TargetIdentity, iso: Path, digest: str, build: int | None
+) -> None:
     iso = iso.resolve(strict=True)
     if (
         not re.fullmatch(r"[A-Za-z]:", iso.drive)
@@ -135,7 +137,7 @@ def _scan_media(identity: TargetIdentity, iso: Path, digest: str, build: int) ->
                 "WUO_FEATURE_ISO": str(iso),
                 "WUO_FEATURE_SHA256": digest,
                 "WUO_FEATURE_SOURCE": f"{identity.build}.{identity.revision}",
-                "WUO_FEATURE_BUILD": str(build),
+                "WUO_FEATURE_BUILD": "" if build is None else str(build),
                 "WUO_FEATURE_ARCH": identity.architecture,
             },
             stdout=subprocess.PIPE,
@@ -158,7 +160,9 @@ def _scan_media(identity: TargetIdentity, iso: Path, digest: str, build: int) ->
         or type(report.get("setup_code")) is not int
         or type(report.get("index")) is not int
         or type(report.get("revision")) is not int
-        or report.get("build") != build
+        or type(report.get("build")) is not int
+        or report["build"] <= identity.build
+        or (build is not None and report["build"] != build)
         or report.get("architecture") != identity.architecture
         or not isinstance(report.get("edition"), str)
         or not isinstance(report.get("language"), str)
@@ -179,16 +183,24 @@ async def check_feature(
 ) -> None:
     if not re.fullmatch(r"[0-9a-fA-F]{64}", media.sha256):
         raise ValueError("Supply the ISO's Microsoft-published SHA-256 digest.")
-    offer, release = select_offer(offers, identity)
-    response = await client.get(_RELEASE_HISTORY)
-    response.raise_for_status()
-    build = release_build(response.text, offer, release, identity)
+    if identity.installation_type.casefold() != "client" or identity.build < 22000:
+        raise ValueError("The ISO compatibility preview requires Windows 11 client.")
+    build = None
+    if offers:
+        offer, release = select_offer(offers, identity)
+        response = await client.get(_RELEASE_HISTORY)
+        response.raise_for_status()
+        build = release_build(response.text, offer, release, identity)
     if await asyncio.to_thread(read_target, read_loader=False) != identity:
         raise ValueError(
             "The running Windows identity changed during the feature check."
         )
     policy = "enabled by default" if media.rollback else "skipped on request"
     print(f"  Planned rollback and backups for this feature upgrade: {policy}.")
+    if build is None:
+        print(
+            "Checking explicitly supplied media without a Windows Update feature offer."
+        )
     print("Checking the ISO and running Windows Setup compatibility scan…", flush=True)
     await asyncio.to_thread(
         _scan_media, identity, media.iso, media.sha256.lower(), build

@@ -700,6 +700,8 @@ async def run_update(
 ) -> int:
     if feature_media is not None and not dry_run:
         raise ValueError("The feature compatibility scan requires a dry run.")
+    if only and "features" not in only:
+        feature_media = None
     print(
         f"Scanning Windows {identity.release} {identity.architecture} ({identity.build}.{identity.revision}) via Windows Update Agent…",
         flush=True,
@@ -707,14 +709,15 @@ async def run_update(
     try:
         offers, issue = await asyncio.to_thread(scan_offers, identity)
     except (OSError, ValueError, subprocess.TimeoutExpired) as error:
-        print(f"Could not discover applicable updates: {error}")
-        return 1
+        offers = []
+        issue = f"Could not discover applicable updates: {error}"
     if issue:
         print(issue)
     selected = [offer for offer in offers if not only or offer.category in only]
     if not selected:
         print("No matching offers from this scan.")
-        return int(bool(issue))
+        if feature_media is None:
+            return int(bool(issue))
     failures = 0
     setup_candidates: list[Offer] | None = [] if feature_media is not None else None
     for offer in selected:
@@ -732,23 +735,16 @@ async def run_update(
         )
         failures += not completed
     if feature_media is not None:
-        if setup_candidates:
-            from .winre_menu import Menu
+        from .winre_menu import Menu
 
-            try:
-                if issue:
-                    raise ValueError(
-                        "A complete Windows Update Agent scan is required."
-                    )
-                with Menu(identity).feature_preview():
-                    await feature_upgrade.check_feature(
-                        client, identity, setup_candidates, feature_media
-                    )
-            except (OSError, ValueError, httpx.HTTPError) as error:
-                print(f"Feature compatibility check incomplete: {error}")
-                failures += len(setup_candidates)
-        elif not only or "features" in only:
-            print("No matching feature offer for the ISO compatibility preview.")
+        try:
+            with Menu(identity).feature_preview():
+                await feature_upgrade.check_feature(
+                    client, identity, setup_candidates or [], feature_media
+                )
+        except (OSError, ValueError, httpx.HTTPError) as error:
+            print(f"Feature compatibility check incomplete: {error}")
+            failures += max(1, len(setup_candidates or []))
     print(
         f"\n{len(selected)} offer(s) checked, {failures} lookup, download, or compatibility failure(s)."
     )
@@ -766,4 +762,5 @@ async def run_update(
                 print(f"  [{item.category}] {item.title}")
                 print(f"    Files: {item.directory}")
                 print(f"    {item.route}")
-    return int(bool(failures or issue))
+    iso_only = feature_media is not None and set(only) == {"features"}
+    return int(bool(failures or (issue and not iso_only)))

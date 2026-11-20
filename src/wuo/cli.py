@@ -341,7 +341,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--feature-iso",
         type=Path,
         metavar="ISO",
-        help="Use a downloaded Microsoft ISO for a feature compatibility scan with --dry-run.",
+        help="Check a downloaded Microsoft ISO with --dry-run, even without a Windows Update offer.",
     )
     workflow.add_argument(
         "--iso-sha256",

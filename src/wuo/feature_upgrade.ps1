@@ -40,19 +40,24 @@ function Get-MatchingImage {
         throw 'The running Windows architecture is unsupported.'
     }
 
+    $sourceBuild = [int]($env:WUO_FEATURE_SOURCE.Split('.')[0])
+    $expectedBuild = $env:WUO_FEATURE_BUILD
     $matching = @(foreach ($entry in Get-WindowsImage -ImagePath $images[0]) {
         $image = Get-WindowsImage -ImagePath $images[0] -Index $entry.ImageIndex
         if ($image.Languages.Count -le $image.DefaultLanguageIndex) { continue }
         if ($image.MajorVersion -eq 10 -and $image.MinorVersion -eq 0 -and
-            $image.Build -eq [int]$env:WUO_FEATURE_BUILD -and $image.InstallationType -eq 'Client' -and
+            $image.Build -gt $sourceBuild -and
+            (!$expectedBuild -or $image.Build -eq [int]$expectedBuild) -and
+            $image.InstallationType -eq 'Client' -and
             $image.Architecture -eq $architecture -and $image.EditionId -eq $editions[0].Edition -and
             $image.Languages[[int]$image.DefaultLanguageIndex] -eq $sourceLanguage) {
             $image
         }
     })
     if ($matching.Count -ne 1) {
-        throw ("The ISO must contain one Windows build {0} image for {1}, {2}, {3}." -f
-            $env:WUO_FEATURE_BUILD, $editions[0].Edition, $env:WUO_FEATURE_ARCH, $sourceLanguage)
+        $buildDescription = if ($expectedBuild) { "with build $expectedBuild" } else { "newer than build $sourceBuild" }
+        throw ("The ISO must contain one Windows image {0} for {1}, {2}, {3}." -f
+            $buildDescription, $editions[0].Edition, $env:WUO_FEATURE_ARCH, $sourceLanguage)
     }
     return $matching[0]
 }
