@@ -44,8 +44,8 @@ compatibility check leaves the feature offer incomplete and does not prevent
 unrelated updates. Once a full-upgrade job is accepted, it runs alone. Discard
 the previous scan's offers and rescan against the replacement build.
 
-Full feature upgrades default to wuo-managed rollback and its backups.
-`wuo update --no-rollback` explicitly skips those backups and automatic
+Full feature upgrades opt in to wuo-managed rollback and its backups with
+`wuo update --backup-drive LETTER:`. Without it, the upgrade skips wuo backups and
 restoration for that upgrade. It does not disable Windows Setup's own recovery
 or change the existing recovery safeguards for CBS packages and drivers. The
 job preview and confirmation show which mode will be used. With rollback
@@ -241,7 +241,7 @@ saved EFI files from independent WinRE. The restored machine ran build
 26200.6584 after a cold boot. Its unrelated EFI file remained intact. Windows
 updated its own BCD and `BOOTSTAT.DAT` during the first ordinary boot.
 The current CLI stages this route only when both the installed menu and the
-feature media pass validation. By default, `--backup-drive` selects a separate
+feature media pass validation. `--backup-drive` opts in to rollback with a separate
 NTFS disk with capacity for the original Windows volume. The WinRE menu can
 offer the matching recovery recipe if a committed upgrade is still pending its
 first boot. Reaching recovery independently is necessary if firmware or the

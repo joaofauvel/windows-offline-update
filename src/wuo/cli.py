@@ -71,6 +71,29 @@ async def _update(client: httpx.AsyncClient, args: argparse.Namespace) -> int:
         )
 
 
+def _confirm_feature_without_backup() -> bool:
+    print(
+        "Warning: A failed feature upgrade can leave Windows unbootable. "
+        "Without a backup drive, wuo has no Windows or EFI backup to restore.",
+        file=sys.stderr,
+    )
+    if sys.stdin is None or not sys.stdin.isatty():
+        print(
+            "Use an interactive terminal to confirm or pass --backup-drive LETTER:.",
+            file=sys.stderr,
+        )
+        return False
+    try:
+        return input(
+            "Continue without a wuo rollback backup? [y/N] "
+        ).strip().casefold() in {
+            "y",
+            "yes",
+        }
+    except EOFError:
+        return False
+
+
 async def _stage_update(
     client: httpx.AsyncClient,
     args: argparse.Namespace,
@@ -82,7 +105,7 @@ async def _stage_update(
 ) -> int:
     iso = getattr(args, "feature_iso", None)
     feature_media = (
-        FeatureMedia(iso, args.iso_sha256, rollback=args.feature_rollback)
+        FeatureMedia(iso, args.iso_sha256, rollback=bool(args.backup_drive))
         if iso is not None
         else None
     )
@@ -156,6 +179,9 @@ async def _stage_update(
             if replace(current, loader_guid=identity.loader_guid) != identity:
                 raise ValueError("The running Windows build changed during the scan.")
             menu = Menu(current)
+            if not feature_media.rollback and not _confirm_feature_without_backup():
+                print("Feature upgrade canceled before staging.")
+                return 1
             print(
                 "Preparing Windows Setup. Use Troubleshoot > wuo to continue after preparation."
             )
@@ -380,16 +406,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="Accept the Windows Setup license terms for the selected media.",
     )
-    workflow.add_argument(
-        "--no-rollback",
-        dest="feature_rollback",
-        action="store_false",
-        help="Skip wuo rollback and backups for a full feature upgrade.",
+    feature_backup = workflow.add_mutually_exclusive_group()
+    feature_backup.add_argument(
+        "--no-rollback", action="store_true", help=argparse.SUPPRESS
     )
-    workflow.add_argument(
+    feature_backup.add_argument(
         "--backup-drive",
         metavar="LETTER:",
-        help="Separate NTFS drive for the Windows and EFI backup before a full feature upgrade.",
+        help="Enable wuo rollback for the feature upgrade using this separate NTFS drive.",
     )
     workflow.add_argument(
         "--driver-cache",
@@ -549,8 +573,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                     workflow.error(
                         "--feature-iso requires --iso-sha256 and --accept-setup-eula"
                     )
-                if args.backup_drive and not args.feature_rollback:
-                    workflow.error("Choose either --backup-drive or --no-rollback.")
                 preparing = not args.dry_run and (
                     not args.only or "features" in args.only
                 )
@@ -558,14 +580,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     workflow.error(
                         "Use --dry-run to check a feature ISO in manual mode."
                     )
-                if preparing and args.feature_rollback and not args.backup_drive:
-                    workflow.error(
-                        "A full feature upgrade requires --backup-drive unless --no-rollback is selected."
-                    )
             elif (
                 args.iso_sha256
                 or args.accept_setup_eula
-                or not args.feature_rollback
+                or args.no_rollback
                 or args.backup_drive
             ):
                 workflow.error("ISO and feature rollback options require --feature-iso")

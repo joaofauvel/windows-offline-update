@@ -202,13 +202,13 @@ def test_only_setup_scan_success_is_accepted(code: int, message: str) -> None:
     feature.require_scan_success(0xC1900210 - 2**32)
 
 
-@pytest.mark.parametrize("flag", [(), ("--no-rollback",)])
-def test_cli_plans_rollback_by_default(
-    flag: tuple[str, ...], monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("backup_drive", [None, "E:"])
+def test_cli_accepts_the_optional_rollback_drive_in_a_preview(
+    backup_drive: str | None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     async def run(args: argparse.Namespace) -> int:
         assert args.dry_run
-        assert args.feature_rollback is (not flag)
+        assert args.backup_drive == backup_drive
         return 0
 
     monkeypatch.setattr(cli, "_run", run)
@@ -222,21 +222,26 @@ def test_cli_plans_rollback_by_default(
                 "--iso-sha256",
                 "a" * 64,
                 "--accept-setup-eula",
-                *flag,
+                *(["--backup-drive", backup_drive] if backup_drive else []),
             ]
         )
         == 0
     )
     assert cli.main(["update", "--no-rollback"]) == 2
+    assert cli.main(["update", "--backup-drive", "E:"]) == 2
     assert cli.main(["update", "--dry-run", "--feature-iso", "windows.iso"]) == 2
 
 
-def test_feature_apply_requires_an_explicit_backup_destination_or_opt_out(
+def test_feature_apply_accepts_an_opt_in_backup_destination(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    assert not feature.FeatureMedia(Path("windows.iso"), "a" * 64).rollback
+
+    drives: list[str | None] = []
+
     async def accept(args: argparse.Namespace) -> int:
         assert not args.dry_run
-        assert (args.backup_drive == "E:") == args.feature_rollback
+        drives.append(args.backup_drive)
         return 0
 
     monkeypatch.setattr(cli, "_run", accept)
@@ -248,14 +253,32 @@ def test_feature_apply_requires_an_explicit_backup_destination_or_opt_out(
         "a" * 64,
         "--accept-setup-eula",
     ]
-    assert cli.main(command) == 2
+    assert cli.main(command) == 0
     assert cli.main([*command, "--backup-drive", "E:"]) == 0
     assert cli.main([*command, "--no-rollback"]) == 0
     assert cli.main([*command, "--backup-drive", "E:", "--no-rollback"]) == 2
+    assert drives == [None, "E:", None]
 
 
-def test_update_stages_the_verified_feature_before_offering_the_winre_restart(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("requested_drive", "interactive", "answer", "staged"),
+    [
+        ("E:", False, "no", True),
+        (None, True, " Yes ", True),
+        (None, True, "", False),
+        (None, True, "no", False),
+        (None, True, None, False),
+        (None, False, "yes", False),
+    ],
+)
+def test_update_confirms_unbacked_feature_before_staging(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    requested_drive: str | None,
+    interactive: bool,
+    answer: str | None,
+    staged: bool,
 ) -> None:
     identity = replace(
         TARGET, windows=tmp_path / "Windows", machine_guid=str(UUID(int=5))
@@ -283,35 +306,45 @@ def test_update_stages_the_verified_feature_before_offering_the_winre_restart(
         verified: feature.FeatureImage,
         profile: Path | None,
         *,
-        backup_drive: str,
+        backup_drive: str | None,
     ) -> Path:
-        assert media.rollback and media.iso == Path("windows.iso")
-        assert verified == image and profile is None and backup_drive == "E:"
+        assert media.rollback is (requested_drive is not None)
+        assert media.iso == Path("windows.iso")
+        assert verified == image and profile is None and backup_drive == requested_drive
         events.append("stage")
         return tmp_path
 
+    def confirm(question: str) -> str:
+        assert "backup" in question and "[y/N]" in question
+        events.append("confirm")
+        if answer is None:
+            raise EOFError
+        return answer
+
     monkeypatch.setattr(cli.target, "read_target", lambda **_: identity)
     monkeypatch.setattr(cli, "run_update", scan)
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: interactive)
+    monkeypatch.setattr("builtins.input", confirm)
     monkeypatch.setattr(Menu, "resume", lambda *_, **__: True)
     monkeypatch.setattr(Menu, "check_windows", lambda _: True)
     monkeypatch.setattr(Menu, "stage_feature", stage)
     monkeypatch.setattr(Menu, "offer_restart", lambda _: events.append("restart"))
-    assert (
-        cli.main(
-            [
-                "update",
-                "--feature-iso",
-                "windows.iso",
-                "--iso-sha256",
-                "a" * 64,
-                "--accept-setup-eula",
-                "--backup-drive",
-                "E:",
-            ]
-        )
-        == 0
-    )
-    assert events == ["stage", "restart"]
+    assert cli.main(
+        [
+            "update",
+            "--feature-iso",
+            "windows.iso",
+            "--iso-sha256",
+            "a" * 64,
+            "--accept-setup-eula",
+            *(["--backup-drive", requested_drive] if requested_drive else []),
+        ]
+    ) == (0 if staged else 1)
+    expected = ["confirm"] if requested_drive is None and interactive else []
+    if staged:
+        expected += ["stage", "restart"]
+    assert events == expected
+    assert ("unbootable" in capsys.readouterr().err) is (requested_drive is None)
 
 
 @pytest.mark.parametrize("scan_error", [False, True])

@@ -31,7 +31,7 @@ _HEADING = re.compile(r"Version ([0-9]{2}H[12]) \(OS build ([0-9]+)\)", re.I)
 class FeatureMedia:
     iso: Path
     sha256: str
-    rollback: bool = True
+    rollback: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -265,7 +265,9 @@ def _run_native(
     return stdout
 
 
-def backup_feature(identity: TargetIdentity, job: UUID, drive: str) -> bytes:
+def backup_feature(
+    identity: TargetIdentity, job: UUID, drive: str
+) -> tuple[bytes, Path]:
     """Snapshot Windows and the active EFI files before any Setup preparation."""
     if not re.fullmatch(r"[A-Z]:", drive, re.I | re.ASCII):
         raise ValueError("Select a local rollback drive letter, such as E:.")
@@ -288,6 +290,7 @@ def backup_feature(identity: TargetIdentity, job: UUID, drive: str) -> bytes:
         {},
     )
     report = json.loads(stdout)
+    volume = report.get("volume") if isinstance(report, dict) else None
     if (
         not isinstance(report, dict)
         or report.get("schema") != 1
@@ -299,9 +302,17 @@ def backup_feature(identity: TargetIdentity, job: UUID, drive: str) -> bytes:
         )
         or not isinstance(report.get("boot_files"), list)
         or not report["boot_files"]
+        or not isinstance(volume, str)
+        or not re.fullmatch(
+            r"\\\\\?\\Volume\{[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\}\\",
+            volume,
+            re.I | re.ASCII,
+        )
     ):
         raise ValueError("The native feature backup returned an invalid receipt.")
-    return json.dumps(report, sort_keys=True).encode("ascii")
+    return json.dumps(report, sort_keys=True).encode("ascii"), Path(
+        volume
+    ) / "WUO-Rollback" / str(job)
 
 
 def _scan_media(
@@ -345,8 +356,10 @@ async def check_feature(
         raise ValueError(
             "The running Windows identity changed during the feature check."
         )
-    policy = "enabled by default" if media.rollback else "skipped on request"
-    print(f"  Planned rollback and backups for this feature upgrade: {policy}.")
+    if media.rollback:
+        print("  The feature upgrade includes a wuo rollback backup.")
+    else:
+        print("  Add --backup-drive to create a wuo rollback backup.")
     if build is None:
         print(
             "Checking explicitly supplied media without a Windows Update feature offer."

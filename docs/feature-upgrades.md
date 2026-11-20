@@ -1,8 +1,9 @@
 # Hooks before the first boot of a feature upgrade
 
-A full Windows Setup upgrade is not automated by `wuo`. Installations that need
-registry changes to access their boot disk require a stronger guarantee than a
-script that runs after the upgrade succeeds.
+The 0.4.0 release candidate can prepare a full Windows Setup upgrade from an
+ISO and continue it from **Troubleshoot → wuo** in the installed Windows
+Recovery Environment (WinRE). The full upgrade and recovery paths have been
+rehearsed in a split-EFI VM. Physical Limine setups still require validation.
 
 ## Compatibility preview
 
@@ -31,9 +32,28 @@ logs. The preview stages no
 recovery job and requests no restart. `--accept-setup-eula` accepts the
 applicable Microsoft software license terms for the scan.
 
-The preview displays the planned rollback policy. Full feature upgrades will
-default to rollback and its backups. `--no-rollback` previews skipping them
-for that upgrade. It does not change Windows Setup's own recovery.
+## Opt in to rollback
+
+Add `--backup-drive F:` to enable wuo rollback for that feature upgrade. Choose
+a healthy NTFS volume on a disk separate from Windows and EFI. Allow enough
+space for the used Windows volume and EFI files. The option also works with
+`--dry-run` to show the plan.
+Windows Setup retains its own recovery behavior either way.
+
+Without a backup drive, a failed upgrade can leave Windows unbootable with
+no wuo backup to restore. Before staging, wuo asks for confirmation in an
+interactive terminal. The default answer is No. Noninteractive feature
+upgrades require a backup drive.
+
+Before staging, wuo backs up Windows and the Windows EFI files. It puts a
+copy of the rollback launcher in
+`F:\WUO-Rollback\<job>\recovery\restore.cmd`. WinRE identifies the volumes
+by ID. Under **Troubleshoot → wuo**, a compatible pending rollback is offered
+for confirmation. From independent WinRE, use the backup drive's recovery
+letter and run `restore.cmd check` to check eligibility before `restore.cmd apply`.
+
+Rollback restores Windows Boot Manager's files and BCD on EFI. Use the
+firmware setup menu to restore a preferred UEFI entry order if Setup changes it.
 
 ## Preboot hooks
 
@@ -68,7 +88,7 @@ Registry edits to a staged image, polling for hive files, or changing boot order
 at an assumed time are not sufficient evidence of that guarantee. Setup can
 perform more work after the edit or replace the boot configuration.
 
-## Validation required before implementation
+## Validation before using a production installation
 
 Use a disposable VM with a full replacement upgrade, rather than an enablement
 package, to record when each new hive is created, loaded, migrated and finalized.

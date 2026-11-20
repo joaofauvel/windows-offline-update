@@ -10,6 +10,7 @@ from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
 from importlib.resources import as_file, files
 from pathlib import Path
+from stat import FILE_ATTRIBUTE_REPARSE_POINT
 from uuid import UUID, uuid4
 
 from . import bundle
@@ -215,7 +216,7 @@ class Menu:
                     f"{package_hashes(pre_hooks)[0]}\r\n".encode("ascii")
                 )
             if media.rollback and backup_drive is not None:
-                receipt = backup_feature(self.target, job_id, backup_drive)
+                receipt, snapshot = backup_feature(self.target, job_id, backup_drive)
                 runner = job / "restore.cmd"
                 runner.write_bytes(
                     render_feature_restore(
@@ -226,6 +227,7 @@ class Menu:
                 (job / "restore.sha256").write_bytes(
                     f"{package_hashes(runner)[0]}\r\n".encode("ascii")
                 )
+                self._export_feature_restore(snapshot, job)
             callback_dir.mkdir(parents=True)
             (callback_dir / "precommit.cmd").write_bytes(callback)
             prepare_media(self.target, media, image)
@@ -241,6 +243,35 @@ class Menu:
             pending.write_bytes(marker)
             os.replace(pending, self.root / "pending.id")
             return job
+
+    def _export_feature_restore(self, snapshot: Path, job: Path) -> None:
+        for path in (snapshot.parent, snapshot, snapshot / "rollback.json"):
+            if (
+                getattr(path.lstat(), "st_file_attributes", 0)
+                & FILE_ATTRIBUTE_REPARSE_POINT
+            ):
+                raise ValueError(
+                    f"The feature rollback path is a reparse point. {path}"
+                )
+        if json.loads((snapshot / "rollback.json").read_bytes()) != json.loads(
+            (job / "rollback.json").read_bytes()
+        ):
+            raise ValueError(
+                "The backup drive's rollback receipt changed during preparation."
+            )
+        system32 = self.target.windows / "System32"
+        sources = (
+            job / "restore.cmd",
+            job / "restore.sha256",
+            system32 / "certutil.exe",
+            system32 / "findstr.exe",
+        )
+        with tempfile.TemporaryDirectory(dir=snapshot) as work:
+            draft = Path(work) / "recovery"
+            draft.mkdir()
+            for source in sources:
+                shutil.copyfile(source, draft / source.name)
+            draft.rename(snapshot / "recovery")
 
     def _register_feature_task(self, job: str, continuation: Path) -> None:
         system32 = self.target.windows / "System32"

@@ -45,15 +45,20 @@ def test_feature_is_published_only_after_backup_and_deferred_setup(
     (menu.root / "feature-menu.version").write_bytes(b"1\r\n")
     iso = tmp_path / "Windows.iso"
     iso.touch()
-    media = feature_upgrade.FeatureMedia(iso, "ab" * 32)
+    media = feature_upgrade.FeatureMedia(iso, "ab" * 32, rollback=True)
     image = feature_upgrade.FeatureImage(1, 26300, 9500, "Core", "x64", "en-US")
     events: list[str] = []
+    backup_root = tmp_path / "backup"
+    system32 = identity.windows / "System32"
+    system32.mkdir(parents=True)
+    for name in ("certutil.exe", "findstr.exe"):
+        (system32 / name).write_bytes(name.encode("ascii"))
 
-    def backup(_target: object, job: object, _drive: object) -> bytes:
+    def backup(_target: object, job: object, _drive: object) -> tuple[bytes, Path]:
         events.append("backup")
         if backup_fails:
             raise ValueError("backup failed")
-        return json.dumps(
+        receipt = json.dumps(
             {
                 "schema": 1,
                 "id": str(job),
@@ -71,10 +76,21 @@ def test_feature_is_published_only_after_backup_and_deferred_setup(
                 ],
             }
         ).encode("ascii")
+        snapshot = backup_root / str(job)
+        snapshot.mkdir(parents=True)
+        (snapshot / "rollback.json").write_bytes(receipt)
+        return receipt, snapshot
 
     def prepare(*_args: object) -> None:
         assert not (menu.root / "pending.id").exists()
         assert not list(menu.job_state(JOB).parent.glob("*/feature.ready"))
+        (portable,) = backup_root.glob("*/recovery")
+        job = menu.job_state(portable.parent.name)
+        assert (portable / "restore.cmd").read_bytes() == (
+            job / "restore.cmd"
+        ).read_bytes()
+        for name in ("certutil.exe", "findstr.exe"):
+            assert (portable / name).read_bytes() == (system32 / name).read_bytes()
         events.append("prepare")
 
     def schedule(_job: str, continuation: Path) -> None:
