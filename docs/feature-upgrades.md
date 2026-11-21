@@ -75,6 +75,27 @@ If Setup replaced an existing third-party fallback with the verified Windows
 Boot Manager, wuo restores the captured file. `wuo status` shows the outcome
 and identifies entries or files that need manual attention.
 
+## Retry a precommit failure
+
+If Setup stopped with `0xC19001E3` before the current job ran its precommit
+hooks, `wuo retry-feature` can prepare the same ISO again under the same job ID.
+It reuses that job's rollback image, keeps the captured post-update hooks and EFI files,
+and archives verified callbacks from earlier abandoned jobs.
+
+Use an administrator PowerShell. Keep the ISO and the rollback drive connected.
+
+```powershell
+wuo retry-feature --dry-run
+wuo retry-feature
+wuo status
+```
+
+The dry run checks the job, the running Windows installation, and the backup
+catalog. The retry requires the boot preservation result to be complete. Once
+status reports **Feature upgrade staged**, run `wuo update` to enter recovery
+and select **Troubleshoot → wuo**. The existing backup still represents the
+original snapshot time.
+
 ## Preboot hooks
 
 The required sequence is:

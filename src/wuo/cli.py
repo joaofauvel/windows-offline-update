@@ -471,6 +471,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="Clear the pending job and keep its files and logs.",
     )
+    retry = commands.add_parser(
+        "retry-feature",
+        help="Restage a failed feature upgrade with its existing rollback backup.",
+    )
+    retry.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Check retry eligibility without staging.",
+    )
     commands.add_parser("remove", help="Remove wuo from the recovery menu.")
     hook_commands = commands.add_parser(
         "hooks", help="List profiles and manage Git sources."
@@ -613,7 +622,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if args.command == "hooks":
             return _hooks_command(args)
-        if args.command in {"setup", "status", "remove"}:
+        if args.command in {"setup", "status", "remove", "retry-feature"}:
             menu = Menu(target.read_target(read_loader=False))
             if args.command == "setup":
                 with tempfile.TemporaryDirectory(prefix="wuo-hooks-") as temporary:
@@ -632,6 +641,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     menu.describe_pending_hooks(registry)
             elif args.command == "remove":
                 menu.remove()
+            elif args.command == "retry-feature":
+                menu.retry_feature(dry_run=args.dry_run)
             elif args.discard:
                 menu.discard()
             else:

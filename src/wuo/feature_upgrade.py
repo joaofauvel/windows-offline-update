@@ -156,6 +156,7 @@ def _run_media(
     build: int | None,
     *,
     expected: FeatureImage | None = None,
+    retry_job: str | None = None,
 ) -> FeatureImage:
     iso = iso.resolve(strict=True)
     if (
@@ -176,6 +177,8 @@ def _run_media(
     if expected is not None:
         operation = "deferred feature preparation"
         arguments.append("-Prepare")
+        if retry_job is not None:
+            arguments.extend(("-RetryPrepareJob", retry_job))
         settings.update(
             WUO_FEATURE_INDEX=str(expected.index),
             WUO_FEATURE_REVISION=str(expected.revision),
@@ -340,7 +343,11 @@ def _scan_media(
 
 
 def prepare_media(
-    identity: TargetIdentity, media: FeatureMedia, image: FeatureImage
+    identity: TargetIdentity,
+    media: FeatureMedia,
+    image: FeatureImage,
+    *,
+    retry_job: str | None = None,
 ) -> FeatureImage:
     """Prepare the verified image in Windows without committing the upgrade."""
     if image.build <= identity.build or image.architecture != identity.architecture:
@@ -348,7 +355,25 @@ def prepare_media(
             "The verified feature image does not match the running Windows."
         )
     return _run_media(
-        identity, media.iso, media.sha256.lower(), image.build, expected=image
+        identity,
+        media.iso,
+        media.sha256.lower(),
+        image.build,
+        expected=image,
+        retry_job=retry_job,
+    )
+
+
+def check_feature_retry(identity: TargetIdentity, job: str, *, staged: bool) -> None:
+    arguments = ["-CheckRetryJob", job]
+    if staged:
+        arguments.append("-StagedRetry")
+    _run_native(
+        identity,
+        "feature_upgrade.ps1",
+        "feature retry validation",
+        arguments,
+        {},
     )
 
 

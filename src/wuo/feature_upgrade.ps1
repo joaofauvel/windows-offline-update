@@ -1,7 +1,10 @@
 [CmdletBinding(DefaultParameterSetName = 'Preview')]
 param(
     [Parameter(Mandatory, ParameterSetName = 'Prepare')][switch]$Prepare,
+    [Parameter(ParameterSetName = 'Prepare')][Guid]$RetryPrepareJob,
     [Parameter(Mandatory, ParameterSetName = 'Finalize')][Guid]$FinalizeJob,
+    [Parameter(Mandatory, ParameterSetName = 'CheckRetry')][Guid]$CheckRetryJob,
+    [Parameter(ParameterSetName = 'CheckRetry')][switch]$StagedRetry,
     [Parameter(Mandatory, ParameterSetName = 'Complete')][Guid]$CompleteJob,
     [Parameter(Mandatory, ParameterSetName = 'Complete')][ValidateSet('success', 'failure')][string]$Outcome
 )
@@ -57,7 +60,8 @@ function Assert-ProtectedJobDirectory([string]$Path) {
     }
 }
 
-function Assert-FeatureBackupAvailable([string]$Job, [string]$JobId, $Request) {
+function Assert-FeatureBackupAvailable {
+    param([string]$Job, [string]$JobId, $Request, [switch]$VerifyArtifacts)
     $receiptPath = Join-Path $Job 'rollback.json'
     Assert-PlainPath $receiptPath
     $receipt = Get-Content -LiteralPath $receiptPath -Raw | ConvertFrom-Json
@@ -79,6 +83,20 @@ function Assert-FeatureBackupAvailable([string]$Job, [string]$JobId, $Request) {
     foreach ($path in $root, $snapshot, $portable) { Assert-PlainPath $path -Directory }
     foreach ($name in 'restore.cmd', 'certutil.exe', 'findstr.exe') {
         Assert-PlainPath (Join-Path $portable $name)
+    }
+    if ($VerifyArtifacts) {
+        $runner = Join-Path $Job 'restore.cmd'
+        $digest = Join-Path $Job 'restore.sha256'
+        $portableRunner = Join-Path $portable 'restore.cmd'
+        $portableDigest = Join-Path $portable 'restore.sha256'
+        foreach ($path in $runner, $digest, $portableDigest) { Assert-PlainPath $path }
+        $expected = Get-Content -LiteralPath $digest -Raw -Encoding ASCII
+        if ($expected -cnotmatch '^[0-9a-f]{64}\r\n\z' -or
+            (Get-Content -LiteralPath $portableDigest -Raw -Encoding ASCII) -cne $expected -or
+            (Get-FileHash -LiteralPath $runner -Algorithm SHA256).Hash -ne $expected.Trim() -or
+            (Get-FileHash -LiteralPath $portableRunner -Algorithm SHA256).Hash -ne $expected.Trim()) {
+            throw 'The rollback launcher or its checksum changed.'
+        }
     }
     $null = & "$env:SystemRoot\System32\wbadmin.exe" get items "-version:$($receipt.catalog)" "-backupTarget:$drive" "-machine:$($receipt.computer)"
     if ($LASTEXITCODE -ne 0) { throw 'Windows Backup could not read the selected rollback backup.' }
@@ -107,6 +125,51 @@ function Assert-BootPreservationAssets([string]$Job, $Request) {
             throw "The boot preservation asset $($asset.Name) changed after capture."
         }
     }
+}
+
+function Assert-FeatureRetry {
+    param([string]$Job, [string]$JobId, $Request, [string]$StagedSystem, [switch]$Staged)
+    if ($Request.rollback -ne $true -or !$Request.boot_preservation) {
+        throw 'Retrying a feature upgrade requires its verified rollback backup and boot preservation assets.'
+    }
+    if (Test-Path -LiteralPath (Join-Path $Job 'authorized.id')) {
+        throw 'The feature upgrade is already authorized.'
+    }
+    if (Test-Path -LiteralPath (Join-Path $Job 'boot-rollback.id')) {
+        throw 'The feature upgrade has a pending rollback.'
+    }
+    $env:WUO_FEATURE_SOURCE = $Request.source
+    Assert-SourceMachine
+    if (Get-Process -Name setup,setuphost,setupprep -ErrorAction SilentlyContinue) {
+        throw 'Windows Setup is still running or staged.'
+    }
+    if ($Staged) {
+        $attempt = Join-Path $Job 'retry-active'
+        Assert-ProtectedJobDirectory $attempt
+        Assert-JobMarker (Join-Path $attempt 'prepared.id') $JobId
+        Assert-PlainPath $StagedSystem
+        if ((Get-ItemProperty 'HKLM:\SYSTEM\Setup').SystemSetupInProgress) {
+            throw 'Windows Setup is still running or staged.'
+        }
+    } else {
+        Assert-WindowsReady
+        if (Test-Path -LiteralPath $StagedSystem) { throw 'Windows Setup is still running or staged.' }
+    }
+    $runner = Join-Path $Job 'feature_upgrade.ps1'
+    Assert-PlainPath $runner
+    $fileArgument = if ($runner -match '[ \t]') { '"' + $runner + '"' } else { $runner }
+    $arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File $fileArgument -FinalizeJob $JobId"
+    $task = Get-ScheduledTask -TaskName "wuo-feature-$JobId" -TaskPath '\'
+    if ($task.State -ne 'Ready' -or $task.Principal.UserId -notin 'SYSTEM', 'NT AUTHORITY\SYSTEM', 'S-1-5-18' -or
+        @($task.Triggers).Count -ne 1 -or $task.Triggers[0].CimClass.CimClassName -ne 'MSFT_TaskBootTrigger' -or
+        !$task.Triggers[0].Enabled -or @($task.Actions).Count -ne 1 -or
+        $task.Actions[0].Execute -ne "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -or
+        $task.Actions[0].Arguments -cne $arguments) {
+        throw 'The expected LocalSystem startup task is missing, changed, or not ready.'
+    }
+    Assert-BootPreservationAssets $Job $Request
+    Assert-JobMarker (Join-Path $Job 'rollback.required') $JobId
+    Assert-FeatureBackupAvailable $Job $JobId $Request -VerifyArtifacts
 }
 
 function Complete-FeatureBoot([string]$Job, [string]$JobId, $Request, [string]$Completion) {
@@ -202,12 +265,24 @@ function Get-MatchingImage {
 
 $finalizing = $PSCmdlet.ParameterSetName -eq 'Finalize'
 $completing = $PSCmdlet.ParameterSetName -eq 'Complete'
+$checkingRetry = $PSCmdlet.ParameterSetName -eq 'CheckRetry'
+$retryPreparing = $Prepare -and $PSBoundParameters.ContainsKey('RetryPrepareJob')
 $stagedSystem = Join-Path "$env:SystemDrive\" '$WINDOWS.~BT\NewOS\Windows\System32\Config\SYSTEM'
-if ($finalizing -or $completing) {
-    if ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value -ne 'S-1-5-18') {
+if ($finalizing -or $completing -or $checkingRetry -or $retryPreparing) {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    if ($checkingRetry -or $retryPreparing) {
+        $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+        if (!$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+            throw 'Check the feature upgrade retry from an elevated Windows terminal.'
+        }
+    } elseif ($identity.User.Value -ne 'S-1-5-18') {
         throw 'A feature upgrade can only resume from the LocalSystem startup task.'
     }
-    $jobId = if ($finalizing) { $FinalizeJob.ToString('D') } else { $CompleteJob.ToString('D') }
+    $jobId = if ($checkingRetry) { $CheckRetryJob.ToString('D') } elseif ($retryPreparing) {
+        $RetryPrepareJob.ToString('D')
+    } elseif ($finalizing) {
+        $FinalizeJob.ToString('D')
+    } else { $CompleteJob.ToString('D') }
     $programData = Join-Path "$env:SystemDrive\" 'ProgramData'
     $root = Join-Path $programData 'WinOfflineUpdate'
     $jobs = Join-Path $root 'jobs'
@@ -218,7 +293,7 @@ if ($finalizing -or $completing) {
     $bootPhase = Join-Path $job 'boot-completion.phase'
     $rolledBack = $finalizing -and (Test-Path -LiteralPath $rollbackMarker)
     $retryBoot = $finalizing -and (Test-Path -LiteralPath $bootPhase)
-    if (!$completing -and !$rolledBack -and !$retryBoot -and !(Test-Path -LiteralPath $authorized)) { return }
+    if ($finalizing -and !$rolledBack -and !$retryBoot -and !(Test-Path -LiteralPath $authorized)) { return }
     Assert-PlainPath $programData -Directory
     foreach ($path in $root, $jobs, $job) {
         Assert-ProtectedJobDirectory $path
@@ -227,7 +302,7 @@ if ($finalizing -or $completing) {
         Assert-JobMarker $rollbackMarker $jobId
     } else {
         Assert-JobMarker (Join-Path $job 'feature.ready') $jobId
-        if ($completing -or $retryBoot) { Assert-JobMarker $claimed $jobId }
+        if ($completing -or $checkingRetry -or $retryPreparing -or $retryBoot) { Assert-JobMarker $claimed $jobId }
         else {
             Assert-JobMarker $authorized $jobId
             if (Test-Path -LiteralPath $claimed) { throw 'This feature upgrade has already been claimed.' }
@@ -243,6 +318,17 @@ if ($finalizing -or $completing) {
         $request.sha256 -notmatch '^[0-9a-f]{64}$' -or
         $request.callback_sha256 -notmatch '^[0-9a-f]{64}$') {
         throw 'Invalid feature upgrade request.'
+    }
+    if ($checkingRetry) {
+        Assert-FeatureRetry $job $jobId $request $stagedSystem -Staged:$StagedRetry
+        return
+    }
+    if ($retryPreparing) {
+        $retryAttempt = Join-Path $job 'retry-active'
+        Assert-ProtectedJobDirectory $retryAttempt
+        $preparedMarker = Join-Path $retryAttempt 'prepared.id'
+        if (Test-Path -LiteralPath $preparedMarker) { throw 'The feature retry is already prepared.' }
+        Assert-FeatureRetry $job $jobId $request $stagedSystem
     }
     if ($completing -or $rolledBack -or $retryBoot) {
         if ($rolledBack -and $request.rollback -ne $true) { throw 'The rollback request is missing.' }
@@ -266,7 +352,7 @@ if ($finalizing -or $completing) {
     $env:WUO_FEATURE_EDITION = $request.image.edition
     $env:WUO_FEATURE_LANGUAGE = $request.image.language
     Assert-SourceMachine
-    Assert-PlainPath $stagedSystem
+    if (!$retryPreparing) { Assert-PlainPath $stagedSystem }
 } else {
     Assert-WindowsReady
 }
@@ -366,6 +452,15 @@ try {
         if ("$($version.CurrentBuildNumber).$($version.UBR)" -ne $env:WUO_FEATURE_SOURCE -or
             !(Test-Path -LiteralPath $stagedSystem -PathType Leaf)) {
             throw 'Windows Setup did not reach the expected deferred state.'
+        }
+        if ($retryPreparing) {
+            Assert-PlainPath $stagedSystem
+            Assert-ProtectedJobDirectory $retryAttempt
+            $temporaryMarker = Join-Path $retryAttempt "prepared-$([Guid]::NewGuid().ToString('N')).tmp"
+            try {
+                [IO.File]::WriteAllText($temporaryMarker, "$jobId`r`n", [Text.Encoding]::ASCII)
+                [IO.File]::Move($temporaryMarker, $preparedMarker)
+            } finally { [IO.File]::Delete($temporaryMarker) }
         }
     }
     @{

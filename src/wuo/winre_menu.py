@@ -26,6 +26,11 @@ lazy from .update import Offer
 MENU_PATH = bundle.JOBS_PATH.parent / "menu"
 _FEATURE_MENU = "feature-menu.version"
 _FEATURE_MENU_VERSION = b"2\r\n"
+_FEATURE_FAILURE_RECORDS = (
+    "boot-completion.phase",
+    "boot-order-result.json",
+    "finalize.result",
+)
 
 
 def _id(value: str) -> str:
@@ -44,6 +49,15 @@ def _read_id(path: Path) -> str | None:
             "Open an administrator terminal to use the WinRE menu."
         ) from None
     return _id(value.removesuffix("\n"))
+
+
+def _check_callback(path: Path, digest: str) -> None:
+    for entry in (path.parent, path):
+        attributes = getattr(entry.lstat(), "st_file_attributes", 0)
+        if entry.is_symlink() or attributes & FILE_ATTRIBUTE_REPARSE_POINT:
+            raise ValueError(f"Unexpected filesystem link in Setup callbacks: {entry}")
+    if not path.is_file() or package_hashes(path)[0] != digest:
+        raise ValueError(f"The feature Setup callback changed: {path}")
 
 
 def _run(command: list[str | Path]) -> str:
@@ -551,7 +565,22 @@ class Menu:
                         f"Setup stopped at the precommit check. The original Windows is active. Log: {state / 'precommit.log'}"
                     )
                 elif boot_reported and (state / "boot-completion.phase").is_file():
-                    print(f"Windows Setup completed its feature job. Review {state}.")
+                    phase = (
+                        (state / "boot-completion.phase")
+                        .read_text(encoding="ascii")
+                        .strip()
+                    )
+                    if phase == "failure":
+                        print(
+                            f"Windows Setup stopped before completing the feature upgrade. Review {state}."
+                        )
+                        print(
+                            "Check whether you can reuse the backup with wuo retry-feature --dry-run."
+                        )
+                    else:
+                        print(
+                            f"Windows Setup completed its feature job. Review {state}."
+                        )
                 elif (state / "claimed.id").is_file():
                     print(
                         f"Windows Setup started the feature upgrade. Review {state / 'precommit.log'}."
@@ -575,6 +604,202 @@ class Menu:
                     f"Offline servicing was interrupted. See {state / 'recovery.log'}."
                 )
             print("Update staged. Run wuo update to enter recovery.")
+
+    def retry_feature(self, *, dry_run: bool) -> None:
+        from .feature_upgrade import (
+            FeatureImage,
+            FeatureMedia,
+            check_feature_retry,
+            prepare_media,
+        )
+
+        with self._lock():
+            self._require_windows_complete_locked()
+            job = self._pending_id()
+            if job is None:
+                raise ValueError("There is no pending feature upgrade to retry.")
+            state = self.job_state(job)
+            if (
+                _read_id(state / "feature.ready") != job
+                or _read_id(state / "claimed.id") != job
+            ):
+                raise ValueError(
+                    "Retry requires a feature job that started in Windows."
+                )
+            if any(
+                (state / name).exists()
+                for name in (
+                    "authorized.id",
+                    "precommit.expected",
+                    "precommit.done",
+                    "precommit.failed",
+                    "boot-rollback.id",
+                )
+            ):
+                raise ValueError(
+                    "The feature job reached a phase that cannot be retried here."
+                )
+            if (state / "source-hooks.cmd").exists():
+                raise ValueError(
+                    "This retry supports jobs with post-update hooks only."
+                )
+            attempt = state / "retry-active"
+            if attempt.resolve() != attempt or (
+                attempt.exists() and not attempt.is_dir()
+            ):
+                raise ValueError("The active retry history is not a plain directory.")
+            interrupted = attempt.is_dir() and _read_id(attempt / "claimed.id") is None
+            records = attempt if interrupted else state
+            prepared = _read_id(attempt / "prepared.id") if interrupted else None
+            if prepared is not None and prepared != job:
+                raise ValueError("The retry preparation marker belongs to another job.")
+            if (records / "finalize.result").read_text(
+                encoding="ascii"
+            ).strip() != "0xC19001E3":
+                raise ValueError(
+                    "Retry requires a Windows Setup precommit failure (0xC19001E3)."
+                )
+            if (records / "boot-completion.phase").read_text(
+                encoding="ascii"
+            ).strip() != "failure":
+                raise ValueError("The feature job has no completed failure phase.")
+            report = json.loads((records / "boot-order-result.json").read_bytes())
+            if (
+                not isinstance(report, dict)
+                or report.get("schema") != 1
+                or report.get("order") not in ("restored", "unchanged")
+                or report.get("fallback") not in ("restored", "unchanged", "absent")
+            ):
+                raise ValueError(
+                    "Resolve the UEFI boot order and EFI fallback result before retrying."
+                )
+
+            request = json.loads((state / "feature.json").read_bytes())
+            if (
+                not isinstance(request, dict)
+                or request.get("rollback") is not True
+                or not request.get("boot_preservation")
+            ):
+                raise ValueError(
+                    "Retry requires the existing rollback backup and boot preservation snapshot."
+                )
+            iso = Path(request["iso"])
+            if not iso.is_file():
+                raise ValueError(f"Reconnect the original installation ISO at {iso}.")
+            callbacks = self.target.windows / "System32/update/runonce"
+            if callbacks.resolve() != callbacks:
+                raise ValueError(
+                    "The Windows Setup callback directory resolves through a filesystem link."
+                )
+            _check_callback(
+                callbacks / job / "precommit.cmd", request["callback_sha256"]
+            )
+            abandoned = self._abandoned_feature_callbacks(callbacks, job)
+            check_feature_retry(self.target, job, staged=prepared is not None)
+            print(f"Feature job {job} can reuse its verified rollback backup.")
+            if dry_run:
+                for path, _ in abandoned:
+                    print(f"Would archive the abandoned Setup callback at {path}.")
+                return
+
+            image = FeatureImage(**request["image"])
+            media = FeatureMedia(
+                iso,
+                request["sha256"],
+                rollback=True,
+                preserve_boot_order=True,
+            )
+            for path, archive in abandoned:
+                path.rename(archive)
+                print(f"Archived the abandoned Setup callbacks at {archive}.")
+            if attempt.is_dir() and not interrupted:
+                attempt.rename(state / f"retry-{uuid4()}")
+            if not attempt.is_dir():
+                with tempfile.TemporaryDirectory(
+                    prefix="retry-records-", dir=state
+                ) as directory:
+                    temporary = Path(directory)
+                    _run(
+                        [
+                            self.target.windows / "System32/icacls.exe",
+                            temporary,
+                            "/setowner",
+                            "*S-1-5-32-544",
+                        ]
+                    )
+                    for name in _FEATURE_FAILURE_RECORDS:
+                        shutil.copyfile(state / name, temporary / name)
+                    temporary.rename(attempt)
+            if prepared is None:
+                prepare_media(self.target, media, image, retry_job=job)
+                if _read_id(attempt / "prepared.id") != job:
+                    raise ValueError(
+                        "Windows Setup did not record a verified retry stage."
+                    )
+            for name in _FEATURE_FAILURE_RECORDS:
+                (state / name).unlink(missing_ok=True)
+            # Clearing the claim enables WinRE again, so do it only after preparation and record cleanup.
+            (state / "claimed.id").rename(attempt / "claimed.id")
+            try:
+                attempt.rename(state / f"retry-{uuid4()}")
+            except OSError:
+                print(f"The retry history remains at {attempt}.")
+        print(
+            "Feature upgrade staged with the existing rollback backup. Run wuo update to enter recovery."
+        )
+
+    def _abandoned_feature_callbacks(
+        self, callbacks: Path, job: str
+    ) -> list[tuple[Path, Path]]:
+        archives: list[tuple[Path, Path]] = []
+        for marker in sorted(self.root.glob("pending.*.abandoned.id")):
+            old = _id(
+                marker.name.removeprefix("pending.").removesuffix(".abandoned.id")
+            )
+            path = callbacks / old
+            if not path.exists() and not path.is_symlink():
+                continue
+            if old == job or _read_id(marker) != old:
+                raise ValueError(f"Invalid abandoned feature marker: {marker}")
+            old_state = self.job_state(old)
+            if (
+                old_state.resolve() != old_state
+                or _read_id(old_state / "feature.ready") != old
+            ):
+                raise ValueError(
+                    f"The abandoned feature job could not be verified: {old_state}"
+                )
+            if any(
+                (old_state / name).exists() for name in ("authorized.id", "claimed.id")
+            ):
+                raise ValueError(
+                    f"The abandoned feature job has already advanced: {old_state}"
+                )
+            request = json.loads((old_state / "feature.json").read_bytes())
+            if (
+                request.get("id") != old
+                or request.get("machine") != self.target.machine_guid
+            ):
+                raise ValueError(
+                    f"The abandoned feature request differs from its marker: {old_state}"
+                )
+            _check_callback(path / "precommit.cmd", request["callback_sha256"])
+            if any(
+                entry.name not in ("precommit.cmd", "success.cmd", "failure.cmd")
+                or not entry.is_file()
+                or entry.is_symlink()
+                for entry in path.iterdir()
+            ):
+                raise ValueError(
+                    f"Unrecognized files in the abandoned Setup callbacks: {path}"
+                )
+            archive = old_state / "archived-setup-callbacks"
+            if archive.exists() or archive.is_symlink():
+                raise ValueError(
+                    f"The abandoned Setup callback archive already exists: {archive}"
+                )
+            archives.append((path, archive))
+        return archives
 
     def discard(self) -> None:
         with self._lock():
